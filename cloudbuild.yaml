@@ -43,12 +43,14 @@ steps:
             DATABASE_HOST="${_DATABASE_HOST_DEV}"
             REDIS_HOST="${_REDIS_HOST_DEV}"
             MIN_INSTANCES="${_MIN_INSTANCES_DEV}"
+            DEBUG_GATEWAY_BODY="/var/log/gateway_debug.log"
             ;;
           prod)
             SERVICE_NAME="${_SERVICE_PROD}"
             DATABASE_HOST="${_DATABASE_HOST_PROD}"
             REDIS_HOST="${_REDIS_HOST_PROD}"
             MIN_INSTANCES="${_MIN_INSTANCES_PROD}"
+            DEBUG_GATEWAY_BODY=""
             ;;
           *)
             echo "Unsupported _ENV: ${_ENV}" >&2
@@ -61,6 +63,7 @@ steps:
         DATABASE_HOST=$${DATABASE_HOST}
         REDIS_HOST=$${REDIS_HOST}
         MIN_INSTANCES=$${MIN_INSTANCES}
+        DEBUG_GATEWAY_BODY=$${DEBUG_GATEWAY_BODY}
         EOF
 
   - name: gcr.io/cloud-builders/docker
@@ -88,6 +91,10 @@ steps:
       - -ceu
       - |
         source /workspace/deploy.env
+        EXTRA_ENV_VARS=""
+        if [ -n "$${DEBUG_GATEWAY_BODY}" ]; then
+          EXTRA_ENV_VARS=",SUB2API_DEBUG_GATEWAY_BODY=$${DEBUG_GATEWAY_BODY}"
+        fi
         gcloud run deploy "$${SERVICE_NAME}" \
           --image="${_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPO}/${_IMAGE_NAME}:$COMMIT_SHA" \
           --region="${_REGION}" \
@@ -105,7 +112,7 @@ steps:
           --network="${_NETWORK}" \
           --subnet="${_SUBNET}" \
           --vpc-egress="${_VPC_EGRESS}" \
-          --set-env-vars="AUTO_SETUP=true,SERVER_HOST=0.0.0.0,SERVER_PORT=8080,SERVER_MODE=release,RUN_MODE=standard,LOG_LEVEL=info,LOG_FORMAT=json,LOG_ENV=cloudrun,LOG_OUTPUT_TO_STDOUT=true,LOG_OUTPUT_TO_FILE=false,TZ=${_TZ},DATABASE_HOST=$${DATABASE_HOST},DATABASE_PORT=${_DATABASE_PORT},DATABASE_USER=${_DATABASE_USER},DATABASE_DBNAME=${_DATABASE_NAME},DATABASE_SSLMODE=${_DATABASE_SSLMODE},REDIS_HOST=$${REDIS_HOST},REDIS_PORT=${_REDIS_PORT},REDIS_DB=${_REDIS_DB},REDIS_ENABLE_TLS=false,ADMIN_EMAIL=${_ADMIN_EMAIL}" \
+          --set-env-vars="AUTO_SETUP=true,SERVER_HOST=0.0.0.0,SERVER_PORT=8080,SERVER_MODE=release,RUN_MODE=standard,LOG_LEVEL=info,LOG_FORMAT=json,LOG_ENV=cloudrun,LOG_OUTPUT_TO_STDOUT=true,LOG_OUTPUT_TO_FILE=false,TZ=${_TZ},DATABASE_HOST=$${DATABASE_HOST},DATABASE_PORT=${_DATABASE_PORT},DATABASE_USER=${_DATABASE_USER},DATABASE_DBNAME=${_DATABASE_NAME},DATABASE_SSLMODE=${_DATABASE_SSLMODE},REDIS_HOST=$${REDIS_HOST},REDIS_PORT=${_REDIS_PORT},REDIS_DB=${_REDIS_DB},REDIS_ENABLE_TLS=false,ADMIN_EMAIL=${_ADMIN_EMAIL}$${EXTRA_ENV_VARS}" \
           --set-secrets="DATABASE_PASSWORD=${_DB_PASSWORD_SECRET}:latest,JWT_SECRET=${_JWT_SECRET_SECRET}:latest,TOTP_ENCRYPTION_KEY=${_TOTP_SECRET_SECRET}:latest,ADMIN_PASSWORD=${_ADMIN_PASSWORD_SECRET}:latest"
 
 images:
