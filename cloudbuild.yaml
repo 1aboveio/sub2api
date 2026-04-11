@@ -19,7 +19,7 @@ substitutions:
   _DATABASE_NAME: sub2api
   _DATABASE_USER: sub2api
   _DATABASE_SSLMODE: require
-  _REDIS_HOST_DEV: 10.141.189.251
+  _VALKEY_INSTANCE_DEV: ai-dev
   _REDIS_HOST_PROD: 10.128.0.39
   _REDIS_PORT: "6379"
   _REDIS_DB: "0"
@@ -41,7 +41,11 @@ steps:
           dev)
             SERVICE_NAME="${_SERVICE_DEV}"
             DATABASE_HOST="${_DATABASE_HOST_DEV}"
-            REDIS_HOST="${_REDIS_HOST_DEV}"
+            REDIS_HOST="$(gcloud memorystore instances describe "${_VALKEY_INSTANCE_DEV}" --location="${_REGION}" --format='value(endpoints[0].connections[0].pscAutoConnection.ipAddress)')"
+            if [[ -z "${REDIS_HOST}" ]]; then
+              echo "Unable to resolve Valkey endpoint for ${_VALKEY_INSTANCE_DEV}" >&2
+              exit 1
+            fi
             MIN_INSTANCES="${_MIN_INSTANCES_DEV}"
             DEBUG_GATEWAY_BODY="/var/log/gateway_debug.log"
             ;;
