@@ -19,7 +19,7 @@ substitutions:
   _DATABASE_NAME: sub2api
   _DATABASE_USER: sub2api
   _DATABASE_SSLMODE: require
-  _REDIS_INSTANCE_DEV: ai-dev
+  _REDIS_HOST_DEV: 10.141.189.251
   _REDIS_HOST_PROD: 10.128.0.39
   _REDIS_PORT: "6379"
   _REDIS_DB: "0"
@@ -41,7 +41,7 @@ steps:
           dev)
             SERVICE_NAME="${_SERVICE_DEV}"
             DATABASE_HOST="${_DATABASE_HOST_DEV}"
-            REDIS_HOST="$(gcloud redis instances describe "${_REDIS_INSTANCE_DEV}" --region="${_REGION}" --format='value(host)')"
+            REDIS_HOST="${_REDIS_HOST_DEV}"
             MIN_INSTANCES="${_MIN_INSTANCES_DEV}"
             ;;
           prod)
