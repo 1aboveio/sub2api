@@ -4810,6 +4810,16 @@ func (s *GatewayService) buildUpstreamRequestAnthropicAPIKeyPassthrough(
 		setHeaderRaw(req.Header, "anthropic-version", "2023-06-01")
 	}
 
+	s.debugLogGatewaySnapshot("UPSTREAM_FORWARD", req.Header, body, map[string]string{
+		"url":                 req.URL.String(),
+		"token_type":          "apikey",
+		"anthropic_mode":      "messages_passthrough",
+		"mimic_claude_code":   "false",
+		"fingerprint_applied": "false",
+		"enable_fp":           "false",
+		"enable_mpt":          "false",
+	})
+
 	return req, nil
 }
 
@@ -8440,6 +8450,16 @@ func (s *GatewayService) buildCountTokensRequestAnthropicAPIKeyPassthrough(
 		req.Header.Set("anthropic-version", "2023-06-01")
 	}
 
+	s.debugLogGatewaySnapshot("UPSTREAM_FORWARD", req.Header, body, map[string]string{
+		"url":                 req.URL.String(),
+		"token_type":          "apikey",
+		"anthropic_mode":      "count_tokens_passthrough",
+		"mimic_claude_code":   "false",
+		"fingerprint_applied": "false",
+		"enable_fp":           "false",
+		"enable_mpt":          "false",
+	})
+
 	return req, nil
 }
 
@@ -8587,6 +8607,16 @@ func (s *GatewayService) buildCountTokensRequest(ctx context.Context, c *gin.Con
 			}
 		}
 	}
+
+	s.debugLogGatewaySnapshot("UPSTREAM_FORWARD", req.Header, body, map[string]string{
+		"url":                 req.URL.String(),
+		"token_type":          tokenType,
+		"anthropic_mode":      "count_tokens",
+		"mimic_claude_code":   strconv.FormatBool(mimicClaudeCode),
+		"fingerprint_applied": strconv.FormatBool(ctFingerprint != nil),
+		"enable_fp":           strconv.FormatBool(ctEnableFP),
+		"enable_mpt":          strconv.FormatBool(ctEnableMPT),
+	})
 
 	if c != nil && tokenType == "oauth" {
 		c.Set(claudeMimicDebugInfoKey, buildClaudeMimicDebugLine(req, body, account, tokenType, mimicClaudeCode))
