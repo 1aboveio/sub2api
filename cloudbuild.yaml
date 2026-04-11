@@ -42,7 +42,7 @@ steps:
             SERVICE_NAME="${_SERVICE_DEV}"
             DATABASE_HOST="${_DATABASE_HOST_DEV}"
             REDIS_HOST="$(gcloud memorystore instances describe "${_VALKEY_INSTANCE_DEV}" --location="${_REGION}" --format='value(endpoints[0].connections[0].pscAutoConnection.ipAddress)')"
-            if [[ -z "${REDIS_HOST}" ]]; then
+            if [[ -z "$${REDIS_HOST}" ]]; then
               echo "Unable to resolve Valkey endpoint for ${_VALKEY_INSTANCE_DEV}" >&2
               exit 1
             fi
