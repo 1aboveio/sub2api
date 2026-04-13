@@ -1,0 +1,124 @@
+substitutions:
+  _ENV: dev
+  _REGION: us-central1
+  _AR_REPO: a1
+  _IMAGE_NAME: sub2api
+  _NETWORK: default
+  _SUBNET: default
+  _VPC_EGRESS: private-ranges-only
+  _CPU: "1"
+  _MEMORY: 2Gi
+  _MAX_INSTANCES: "5"
+  _MIN_INSTANCES_DEV: "0"
+  _MIN_INSTANCES_PROD: "0"
+  _SERVICE_DEV: sub2api-dev
+  _SERVICE_PROD: sub2api-prod
+  _DATABASE_HOST_DEV: 10.58.0.11
+  _DATABASE_HOST_PROD: 10.58.0.15
+  _DATABASE_PORT: "5432"
+  _DATABASE_NAME: sub2api
+  _DATABASE_USER: sub2api
+  _DATABASE_SSLMODE: require
+  _REDIS_HOST_DEV: 10.128.0.42
+  _REDIS_HOST_PROD: 10.128.0.39
+  _REDIS_PORT: "6379"
+  _REDIS_DB: "0"
+  _TZ: Asia/Shanghai
+  _ADMIN_EMAIL: admin@sub2api.local
+  _RUNTIME_SA: 903828198190-compute@developer.gserviceaccount.com
+  _DB_PASSWORD_SECRET: sub2api-db-password
+  _JWT_SECRET_SECRET: sub2api-jwt-secret
+  _TOTP_SECRET_SECRET: sub2api-totp-encryption-key
+  _ADMIN_PASSWORD_SECRET: sub2api-admin-password
+
+steps:
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: bash
+    args:
+      - -ceu
+      - |
+        case "${_ENV}" in
+          dev)
+            SERVICE_NAME="${_SERVICE_DEV}"
+            DATABASE_HOST="${_DATABASE_HOST_DEV}"
+            REDIS_HOST="${_REDIS_HOST_DEV}"
+            MIN_INSTANCES="${_MIN_INSTANCES_DEV}"
+            DEBUG_GATEWAY_BODY="/var/log/gateway_debug.log"
+            ;;
+          prod)
+            SERVICE_NAME="${_SERVICE_PROD}"
+            DATABASE_HOST="${_DATABASE_HOST_PROD}"
+            REDIS_HOST="${_REDIS_HOST_PROD}"
+            MIN_INSTANCES="${_MIN_INSTANCES_PROD}"
+            DEBUG_GATEWAY_BODY=""
+            ;;
+          *)
+            echo "Unsupported _ENV: ${_ENV}" >&2
+            exit 1
+            ;;
+        esac
+
+        cat > /workspace/deploy.env <<EOF
+        SERVICE_NAME=$${SERVICE_NAME}
+        DATABASE_HOST=$${DATABASE_HOST}
+        REDIS_HOST=$${REDIS_HOST}
+        MIN_INSTANCES=$${MIN_INSTANCES}
+        DEBUG_GATEWAY_BODY=$${DEBUG_GATEWAY_BODY}
+        EOF
+
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -t
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPO}/${_IMAGE_NAME}:$COMMIT_SHA
+      - -t
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPO}/${_IMAGE_NAME}:latest
+      - --build-arg
+      - COMMIT=$COMMIT_SHA
+      - --build-arg
+      - VERSION=$SHORT_SHA
+      - .
+
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - --all-tags
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPO}/${_IMAGE_NAME}
+
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: bash
+    args:
+      - -ceu
+      - |
+        source /workspace/deploy.env
+        EXTRA_ENV_VARS=""
+        if [ -n "$${DEBUG_GATEWAY_BODY}" ]; then
+          EXTRA_ENV_VARS=",SUB2API_DEBUG_GATEWAY_BODY=$${DEBUG_GATEWAY_BODY}"
+        fi
+        gcloud run deploy "$${SERVICE_NAME}" \
+          --image="${_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPO}/${_IMAGE_NAME}:$COMMIT_SHA" \
+          --region="${_REGION}" \
+          --platform=managed \
+          --service-account="${_RUNTIME_SA}" \
+          --allow-unauthenticated \
+          --port=8080 \
+          --cpu="${_CPU}" \
+          --memory="${_MEMORY}" \
+          --min-instances="$${MIN_INSTANCES}" \
+          --max-instances="${_MAX_INSTANCES}" \
+          --timeout=300 \
+          --cpu-boost \
+          --no-cpu-throttling \
+          --network="${_NETWORK}" \
+          --subnet="${_SUBNET}" \
+          --vpc-egress="${_VPC_EGRESS}" \
+          --set-env-vars="AUTO_SETUP=true,SERVER_HOST=0.0.0.0,SERVER_PORT=8080,SERVER_MODE=release,RUN_MODE=standard,LOG_LEVEL=info,LOG_FORMAT=json,LOG_ENV=cloudrun,LOG_OUTPUT_TO_STDOUT=true,LOG_OUTPUT_TO_FILE=false,TZ=${_TZ},DATABASE_HOST=$${DATABASE_HOST},DATABASE_PORT=${_DATABASE_PORT},DATABASE_USER=${_DATABASE_USER},DATABASE_DBNAME=${_DATABASE_NAME},DATABASE_SSLMODE=${_DATABASE_SSLMODE},REDIS_HOST=$${REDIS_HOST},REDIS_PORT=${_REDIS_PORT},REDIS_DB=${_REDIS_DB},REDIS_ENABLE_TLS=false,ADMIN_EMAIL=${_ADMIN_EMAIL}$${EXTRA_ENV_VARS}" \
+          --set-secrets="DATABASE_PASSWORD=${_DB_PASSWORD_SECRET}:latest,JWT_SECRET=${_JWT_SECRET_SECRET}:latest,TOTP_ENCRYPTION_KEY=${_TOTP_SECRET_SECRET}:latest,ADMIN_PASSWORD=${_ADMIN_PASSWORD_SECRET}:latest"
+
+images:
+  - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPO}/${_IMAGE_NAME}:$COMMIT_SHA
+  - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPO}/${_IMAGE_NAME}:latest
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+  machineType: E2_HIGHCPU_8
