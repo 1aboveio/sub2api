@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -20,6 +21,26 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 )
+
+func readGatewayDebugFileForTest(t *testing.T, svc *GatewayService) string {
+	t.Helper()
+	f := svc.debugGatewayBodyFile.Load()
+	require.NotNil(t, f, "debug gateway file should be initialized")
+	require.NoError(t, f.Sync())
+	raw, err := os.ReadFile(f.Name())
+	require.NoError(t, err)
+	return string(raw)
+}
+
+func closeGatewayDebugFileForTest(t *testing.T, svc *GatewayService) {
+	t.Helper()
+	f := svc.debugGatewayBodyFile.Load()
+	if f == nil {
+		return
+	}
+	require.NoError(t, f.Close())
+	svc.debugGatewayBodyFile.Store(nil)
+}
 
 type anthropicHTTPUpstreamRecorder struct {
 	lastReq  *http.Request
@@ -660,6 +681,83 @@ func TestGatewayService_AnthropicAPIKeyPassthrough_BuildRequestRejectsInvalidBas
 
 	_, err := svc.buildUpstreamRequestAnthropicAPIKeyPassthrough(context.Background(), c, account, []byte(`{}`), "k")
 	require.Error(t, err)
+}
+
+func TestGatewayService_AnthropicAPIKeyPassthrough_BuildRequestWritesDebugSnapshot(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	c.Request.Header.Set("Anthropic-Beta", "interleaved-thinking-2025-05-14")
+
+	svc := &GatewayService{}
+	logPath := t.TempDir() + "/gateway_debug.log"
+	svc.initDebugGatewayBodyFile(logPath)
+	t.Cleanup(func() { closeGatewayDebugFileForTest(t, svc) })
+
+	account := newAnthropicAPIKeyAccountForTest()
+	body := []byte(`{"model":"claude-3-5-sonnet-latest","messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`)
+
+	req, err := svc.buildUpstreamRequestAnthropicAPIKeyPassthrough(context.Background(), c, account, body, "upstream-secret-key")
+	require.NoError(t, err)
+	require.NotNil(t, req)
+
+	logOutput := readGatewayDebugFileForTest(t, svc)
+	require.Contains(t, logOutput, "[UPSTREAM_FORWARD]")
+	require.Contains(t, logOutput, "anthropic_mode: messages_passthrough")
+	require.Contains(t, logOutput, "x-api-key: [redacted]")
+	require.Contains(t, logOutput, `"model": "claude-3-5-sonnet-latest"`)
+}
+
+func TestGatewayService_BuildCountTokensRequestAnthropicAPIKeyPassthrough_WritesDebugSnapshot(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages/count_tokens", nil)
+
+	svc := &GatewayService{}
+	logPath := t.TempDir() + "/gateway_debug.log"
+	svc.initDebugGatewayBodyFile(logPath)
+	t.Cleanup(func() { closeGatewayDebugFileForTest(t, svc) })
+
+	account := newAnthropicAPIKeyAccountForTest()
+	body := []byte(`{"model":"claude-3-5-sonnet-latest","messages":[{"role":"user","content":[{"type":"text","text":"count me"}]}]}`)
+
+	req, err := svc.buildCountTokensRequestAnthropicAPIKeyPassthrough(context.Background(), c, account, body, "upstream-secret-key")
+	require.NoError(t, err)
+	require.NotNil(t, req)
+
+	logOutput := readGatewayDebugFileForTest(t, svc)
+	require.Contains(t, logOutput, "[UPSTREAM_FORWARD]")
+	require.Contains(t, logOutput, "anthropic_mode: count_tokens_passthrough")
+	require.Contains(t, logOutput, "x-api-key: [redacted]")
+	require.Contains(t, logOutput, `"text": "count me"`)
+}
+
+func TestGatewayService_BuildCountTokensRequest_WritesDebugSnapshot(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages/count_tokens", nil)
+	c.Request.Header.Set("Anthropic-Beta", "interleaved-thinking-2025-05-14")
+
+	svc := &GatewayService{}
+	logPath := t.TempDir() + "/gateway_debug.log"
+	svc.initDebugGatewayBodyFile(logPath)
+	t.Cleanup(func() { closeGatewayDebugFileForTest(t, svc) })
+
+	account := newAnthropicAPIKeyAccountForTest()
+	body := []byte(`{"model":"claude-3-5-sonnet-latest","messages":[{"role":"user","content":[{"type":"text","text":"debug generic count"}]}]}`)
+
+	req, err := svc.buildCountTokensRequest(context.Background(), c, account, body, "upstream-secret-key", "apikey", "claude-3-5-sonnet-latest", false)
+	require.NoError(t, err)
+	require.NotNil(t, req)
+
+	logOutput := readGatewayDebugFileForTest(t, svc)
+	require.Contains(t, logOutput, "[UPSTREAM_FORWARD]")
+	require.Contains(t, logOutput, "anthropic_mode: count_tokens")
+	require.Contains(t, logOutput, "token_type: apikey")
+	require.Contains(t, logOutput, `"text": "debug generic count"`)
 }
 
 func TestGatewayService_AnthropicOAuth_NotAffectedByAPIKeyPassthroughToggle(t *testing.T) {

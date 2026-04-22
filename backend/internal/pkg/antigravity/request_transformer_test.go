@@ -455,4 +455,8 @@ func TestTransformClaudeToGeminiWithOptions_PreservesWebSearchAlongsideFunctions
 	require.Len(t, req.Request.Tools[0].FunctionDeclarations, 1)
 	require.Equal(t, "get_weather", req.Request.Tools[0].FunctionDeclarations[0].Name)
 	require.NotNil(t, req.Request.Tools[1].GoogleSearch)
+	require.NotNil(t, req.Request.ToolConfig)
+	require.NotNil(t, req.Request.ToolConfig.FunctionCallingConfig)
+	require.Equal(t, "VALIDATED", req.Request.ToolConfig.FunctionCallingConfig.Mode)
+	require.True(t, req.Request.ToolConfig.IncludeServerSideToolInvocations)
 }

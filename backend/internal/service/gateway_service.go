@@ -558,6 +558,7 @@ type GatewayService struct {
 	responseHeaderFilter  *responseheaders.CompiledHeaderFilter
 	debugModelRouting     atomic.Bool
 	debugClaudeMimic      atomic.Bool
+	debugGatewayBody      atomic.Bool
 	channelService        *ChannelService
 	resolver              *ModelPricingResolver
 	debugGatewayBodyFile  atomic.Pointer[os.File] // non-nil when SUB2API_DEBUG_GATEWAY_BODY is set
@@ -639,6 +640,7 @@ func NewGatewayService(
 	svc.debugModelRouting.Store(parseDebugEnvBool(os.Getenv("SUB2API_DEBUG_MODEL_ROUTING")))
 	svc.debugClaudeMimic.Store(parseDebugEnvBool(os.Getenv("SUB2API_DEBUG_CLAUDE_MIMIC")))
 	if path := strings.TrimSpace(os.Getenv(debugGatewayBodyEnv)); path != "" {
+		svc.debugGatewayBody.Store(true)
 		svc.initDebugGatewayBodyFile(path)
 	}
 	return svc
@@ -4809,6 +4811,16 @@ func (s *GatewayService) buildUpstreamRequestAnthropicAPIKeyPassthrough(
 		setHeaderRaw(req.Header, "anthropic-version", "2023-06-01")
 	}
 
+	s.debugLogGatewaySnapshot("UPSTREAM_FORWARD", req.Header, body, map[string]string{
+		"url":                 req.URL.String(),
+		"token_type":          "apikey",
+		"anthropic_mode":      "messages_passthrough",
+		"mimic_claude_code":   "false",
+		"fingerprint_applied": "false",
+		"enable_fp":           "false",
+		"enable_mpt":          "false",
+	})
+
 	return req, nil
 }
 
@@ -8512,6 +8524,16 @@ func (s *GatewayService) buildCountTokensRequestAnthropicAPIKeyPassthrough(
 		req.Header.Set("anthropic-version", "2023-06-01")
 	}
 
+	s.debugLogGatewaySnapshot("UPSTREAM_FORWARD", req.Header, body, map[string]string{
+		"url":                 req.URL.String(),
+		"token_type":          "apikey",
+		"anthropic_mode":      "count_tokens_passthrough",
+		"mimic_claude_code":   "false",
+		"fingerprint_applied": "false",
+		"enable_fp":           "false",
+		"enable_mpt":          "false",
+	})
+
 	return req, nil
 }
 
@@ -8659,6 +8681,16 @@ func (s *GatewayService) buildCountTokensRequest(ctx context.Context, c *gin.Con
 			}
 		}
 	}
+
+	s.debugLogGatewaySnapshot("UPSTREAM_FORWARD", req.Header, body, map[string]string{
+		"url":                 req.URL.String(),
+		"token_type":          tokenType,
+		"anthropic_mode":      "count_tokens",
+		"mimic_claude_code":   strconv.FormatBool(mimicClaudeCode),
+		"fingerprint_applied": strconv.FormatBool(ctFingerprint != nil),
+		"enable_fp":           strconv.FormatBool(ctEnableFP),
+		"enable_mpt":          strconv.FormatBool(ctEnableMPT),
+	})
 
 	if c != nil && tokenType == "oauth" {
 		c.Set(claudeMimicDebugInfoKey, buildClaudeMimicDebugLine(req, body, account, tokenType, mimicClaudeCode))
@@ -8882,6 +8914,17 @@ func (s *GatewayService) initDebugGatewayBodyFile(path string) {
 //
 // tag: "CLIENT_ORIGINAL" 或 "UPSTREAM_FORWARD"
 func (s *GatewayService) debugLogGatewaySnapshot(tag string, headers http.Header, body []byte, extra map[string]string) {
+	if !s.debugGatewayBody.Load() {
+		return
+	}
+
+	slog.Info("gateway_debug_snapshot",
+		"tag", tag,
+		"context", debugGatewaySnapshotContext(extra),
+		"headers", debugGatewaySnapshotHeaders(headers),
+		"body", debugGatewaySnapshotBody(body),
+	)
+
 	f := s.debugGatewayBodyFile.Load()
 	if f == nil {
 		return
@@ -8928,4 +8971,49 @@ func (s *GatewayService) debugLogGatewaySnapshot(tag string, headers http.Header
 
 	// 写入文件（调试用，并发写入可能交错但不影响可读性）
 	_, _ = f.WriteString(buf.String())
+}
+
+func debugGatewaySnapshotContext(extra map[string]string) map[string]any {
+	if len(extra) == 0 {
+		return map[string]any{}
+	}
+	out := make(map[string]any, len(extra))
+	for k, v := range extra {
+		out[k] = v
+	}
+	return out
+}
+
+func debugGatewaySnapshotHeaders(headers http.Header) map[string]any {
+	if len(headers) == 0 {
+		return map[string]any{}
+	}
+	out := make(map[string]any, len(headers))
+	for _, k := range sortHeadersByWireOrder(headers) {
+		values := headers.Values(k)
+		if len(values) == 0 {
+			continue
+		}
+		safeValues := make([]string, 0, len(values))
+		for _, v := range values {
+			safeValues = append(safeValues, safeHeaderValueForLog(k, v))
+		}
+		if len(safeValues) == 1 {
+			out[k] = safeValues[0]
+			continue
+		}
+		out[k] = safeValues
+	}
+	return out
+}
+
+func debugGatewaySnapshotBody(body []byte) any {
+	if len(body) == 0 {
+		return ""
+	}
+	var parsed any
+	if json.Unmarshal(body, &parsed) == nil {
+		return parsed
+	}
+	return string(body)
 }

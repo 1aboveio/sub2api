@@ -133,16 +133,20 @@ func TransformClaudeToGeminiWithOptions(claudeReq *ClaudeRequest, projectID, map
 
 	// 4. 构建 tools
 	tools := buildTools(claudeReq.Tools)
+	toolConfig := &GeminiToolConfig{
+		FunctionCallingConfig: &GeminiFunctionCallingConfig{
+			Mode: "VALIDATED",
+		},
+	}
+	if hasWebSearchTool && hasFunctionTools(claudeReq.Tools) {
+		toolConfig.IncludeServerSideToolInvocations = true
+	}
 
 	// 5. 构建内部请求
 	innerRequest := GeminiRequest{
 		Contents: contents,
 		// 总是设置 toolConfig，与官方客户端一致
-		ToolConfig: &GeminiToolConfig{
-			FunctionCallingConfig: &GeminiFunctionCallingConfig{
-				Mode: "VALIDATED",
-			},
-		},
+		ToolConfig: toolConfig,
 		// 总是生成 sessionId，基于用户消息内容
 		SessionID: generateStableSessionID(contents),
 	}
@@ -658,6 +662,19 @@ func hasWebSearchTool(tools []ClaudeTool) bool {
 		if isWebSearchTool(tool) {
 			return true
 		}
+	}
+	return false
+}
+
+func hasFunctionTools(tools []ClaudeTool) bool {
+	for _, tool := range tools {
+		if isWebSearchTool(tool) {
+			continue
+		}
+		if strings.TrimSpace(tool.Name) == "" {
+			continue
+		}
+		return true
 	}
 	return false
 }
