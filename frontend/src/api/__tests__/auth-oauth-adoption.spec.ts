@@ -74,6 +74,26 @@ describe('oauth adoption auth api', () => {
     })
   })
 
+  it('posts affiliate code when completing linuxdo oauth registration', async () => {
+    const { completeLinuxDoOAuthRegistration } = await import('@/api/auth')
+
+    await completeLinuxDoOAuthRegistration(
+      'invite-code',
+      {
+        adoptDisplayName: true,
+        adoptAvatar: false
+      },
+      ' AFF123 '
+    )
+
+    expect(post).toHaveBeenCalledWith('/auth/oauth/linuxdo/complete-registration', {
+      invitation_code: 'invite-code',
+      aff_code: 'AFF123',
+      adopt_display_name: true,
+      adopt_avatar: false
+    })
+  })
+
   it('posts oidc invitation completion with adoption decisions', async () => {
     const { completeOIDCOAuthRegistration } = await import('@/api/auth')
 
@@ -134,6 +154,26 @@ describe('oauth adoption auth api', () => {
     })
   })
 
+  it('posts affiliate code when creating pending wechat oauth account', async () => {
+    const { createPendingWeChatOAuthAccount } = await import('@/api/auth')
+
+    await createPendingWeChatOAuthAccount(
+      'invite-code',
+      {
+        adoptDisplayName: false,
+        adoptAvatar: true
+      },
+      'WXAFF'
+    )
+
+    expect(post).toHaveBeenCalledWith('/auth/oauth/wechat/complete-registration', {
+      invitation_code: 'invite-code',
+      aff_code: 'WXAFF',
+      adopt_display_name: false,
+      adopt_avatar: true
+    })
+  })
+
   it('classifies oauth completion results as login or bind', async () => {
     const { getOAuthCompletionKind } = await import('@/api/auth')
 
@@ -173,20 +213,12 @@ describe('oauth adoption auth api', () => {
     expect(hasPendingOAuthSuggestedProfile({})).toBe(false)
   })
 
-  it('prepares an oauth bind access token cookie before redirect binding', async () => {
+  it('requests an HttpOnly oauth bind cookie before redirect binding', async () => {
     localStorage.setItem('auth_token', 'access-token-value')
-    const setCookie = vi.fn()
-    Object.defineProperty(document, 'cookie', {
-      configurable: true,
-      get: () => '',
-      set: setCookie
-    })
-
     const { prepareOAuthBindAccessTokenCookie } = await import('@/api/auth')
 
-    prepareOAuthBindAccessTokenCookie()
+    await prepareOAuthBindAccessTokenCookie()
 
-    expect(setCookie).toHaveBeenCalledTimes(1)
-    expect(setCookie.mock.calls[0]?.[0]).toContain('oauth_bind_access_token=access-token-value')
+    expect(post).toHaveBeenCalledWith('/auth/oauth/bind-token')
   })
 })

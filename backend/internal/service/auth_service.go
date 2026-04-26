@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -71,6 +72,7 @@ type AuthService struct {
 	turnstileService   *TurnstileService
 	emailQueueService  *EmailQueueService
 	promoService       *PromoService
+	affiliateService   *AffiliateService
 	defaultSubAssigner DefaultSubscriptionAssigner
 }
 
@@ -97,6 +99,7 @@ func NewAuthService(
 	emailQueueService *EmailQueueService,
 	promoService *PromoService,
 	defaultSubAssigner DefaultSubscriptionAssigner,
+	affiliateService *AffiliateService,
 ) *AuthService {
 	return &AuthService{
 		entClient:          entClient,
@@ -109,6 +112,7 @@ func NewAuthService(
 		turnstileService:   turnstileService,
 		emailQueueService:  emailQueueService,
 		promoService:       promoService,
+		affiliateService:   affiliateService,
 		defaultSubAssigner: defaultSubAssigner,
 	}
 }
@@ -122,11 +126,11 @@ func (s *AuthService) EntClient() *dbent.Client {
 
 // Register 用户注册，返回token和用户
 func (s *AuthService) Register(ctx context.Context, email, password string) (string, *User, error) {
-	return s.RegisterWithVerification(ctx, email, password, "", "", "")
+	return s.RegisterWithVerification(ctx, email, password, "", "", "", "")
 }
 
-// RegisterWithVerification 用户注册（支持邮件验证、优惠码和邀请码），返回token和用户
-func (s *AuthService) RegisterWithVerification(ctx context.Context, email, password, verifyCode, promoCode, invitationCode string) (string, *User, error) {
+// RegisterWithVerification 用户注册（支持邮件验证、优惠码、邀请码和邀请返利码），返回token和用户。
+func (s *AuthService) RegisterWithVerification(ctx context.Context, email, password, verifyCode, promoCode, invitationCode, affiliateCode string) (string, *User, error) {
 	// 检查是否开放注册（默认关闭：settingService 未配置时不允许注册）
 	if s.settingService == nil || !s.settingService.IsRegistrationEnabled(ctx) {
 		return "", nil, ErrRegDisabled
@@ -195,6 +199,12 @@ func (s *AuthService) RegisterWithVerification(ctx context.Context, email, passw
 
 	grantPlan := s.resolveSignupGrantPlan(ctx, "email")
 
+	// 新用户默认 RPM（0 = 不限制）。注册时写入，后续作为用户级兜底。
+	var defaultRPMLimit int
+	if s.settingService != nil {
+		defaultRPMLimit = s.settingService.GetDefaultUserRPMLimit(ctx)
+	}
+
 	// 创建用户
 	user := &User{
 		Email:        email,
@@ -202,6 +212,7 @@ func (s *AuthService) RegisterWithVerification(ctx context.Context, email, passw
 		Role:         RoleUser,
 		Balance:      grantPlan.Balance,
 		Concurrency:  grantPlan.Concurrency,
+		RPMLimit:     defaultRPMLimit,
 		Status:       StatusActive,
 	}
 
@@ -215,6 +226,17 @@ func (s *AuthService) RegisterWithVerification(ctx context.Context, email, passw
 	}
 	s.postAuthUserBootstrap(ctx, user, "email", true)
 	s.assignSubscriptions(ctx, user.ID, grantPlan.Subscriptions, "auto assigned by signup defaults")
+	if s.affiliateService != nil {
+		if _, err := s.affiliateService.EnsureUserAffiliate(ctx, user.ID); err != nil {
+			logger.LegacyPrintf("service.auth", "[Auth] Failed to initialize affiliate profile for user %d: %v", user.ID, err)
+		}
+		if code := strings.TrimSpace(affiliateCode); code != "" {
+			if err := s.affiliateService.BindInviterByCode(ctx, user.ID, code); err != nil {
+				// 邀请返利码绑定失败不影响注册，只记录日志
+				logger.LegacyPrintf("service.auth", "[Auth] Failed to bind affiliate inviter for user %d: %v", user.ID, err)
+			}
+		}
+	}
 
 	// 标记邀请码为已使用（如果使用了邀请码）
 	if invitationRedeemCode != nil {
@@ -480,6 +502,10 @@ func (s *AuthService) LoginOrRegisterOAuth(ctx context.Context, email, username 
 
 			signupSource := inferLegacySignupSource(email)
 			grantPlan := s.resolveSignupGrantPlan(ctx, signupSource)
+			var defaultRPMLimit int
+			if s.settingService != nil {
+				defaultRPMLimit = s.settingService.GetDefaultUserRPMLimit(ctx)
+			}
 
 			newUser := &User{
 				Email:        email,
@@ -488,7 +514,9 @@ func (s *AuthService) LoginOrRegisterOAuth(ctx context.Context, email, username 
 				Role:         RoleUser,
 				Balance:      grantPlan.Balance,
 				Concurrency:  grantPlan.Concurrency,
+				RPMLimit:     defaultRPMLimit,
 				Status:       StatusActive,
+				SignupSource: signupSource,
 			}
 
 			if err := s.userRepo.Create(ctx, newUser); err != nil {
@@ -535,7 +563,8 @@ func (s *AuthService) LoginOrRegisterOAuth(ctx context.Context, email, username 
 // LoginOrRegisterOAuthWithTokenPair 用于第三方 OAuth/SSO 登录，返回完整的 TokenPair。
 // 与 LoginOrRegisterOAuth 功能相同，但返回 TokenPair 而非单个 token。
 // invitationCode 仅在邀请码注册模式下新用户注册时使用；已有账号登录时忽略。
-func (s *AuthService) LoginOrRegisterOAuthWithTokenPair(ctx context.Context, email, username, invitationCode string) (*TokenPair, *User, error) {
+// affiliateCode 用于邀请返利绑定，仅在新用户注册时使用。
+func (s *AuthService) LoginOrRegisterOAuthWithTokenPair(ctx context.Context, email, username, invitationCode, affiliateCode string) (*TokenPair, *User, error) {
 	// 检查 refreshTokenCache 是否可用
 	if s.refreshTokenCache == nil {
 		return nil, nil, errors.New("refresh token cache not configured")
@@ -590,6 +619,10 @@ func (s *AuthService) LoginOrRegisterOAuthWithTokenPair(ctx context.Context, ema
 
 			signupSource := inferLegacySignupSource(email)
 			grantPlan := s.resolveSignupGrantPlan(ctx, signupSource)
+			var defaultRPMLimit int
+			if s.settingService != nil {
+				defaultRPMLimit = s.settingService.GetDefaultUserRPMLimit(ctx)
+			}
 
 			newUser := &User{
 				Email:        email,
@@ -598,7 +631,9 @@ func (s *AuthService) LoginOrRegisterOAuthWithTokenPair(ctx context.Context, ema
 				Role:         RoleUser,
 				Balance:      grantPlan.Balance,
 				Concurrency:  grantPlan.Concurrency,
+				RPMLimit:     defaultRPMLimit,
 				Status:       StatusActive,
+				SignupSource: signupSource,
 			}
 
 			if s.entClient != nil && invitationRedeemCode != nil {
@@ -632,6 +667,7 @@ func (s *AuthService) LoginOrRegisterOAuthWithTokenPair(ctx context.Context, ema
 					user = newUser
 					s.postAuthUserBootstrap(ctx, user, signupSource, false)
 					s.assignSubscriptions(ctx, user.ID, grantPlan.Subscriptions, "auto assigned by signup defaults")
+					s.bindOAuthAffiliate(ctx, user.ID, affiliateCode)
 				}
 			} else {
 				if err := s.userRepo.Create(ctx, newUser); err != nil {
@@ -649,6 +685,7 @@ func (s *AuthService) LoginOrRegisterOAuthWithTokenPair(ctx context.Context, ema
 					user = newUser
 					s.postAuthUserBootstrap(ctx, user, signupSource, false)
 					s.assignSubscriptions(ctx, user.ID, grantPlan.Subscriptions, "auto assigned by signup defaults")
+					s.bindOAuthAffiliate(ctx, user.ID, affiliateCode)
 					if invitationRedeemCode != nil {
 						if err := s.redeemRepo.Use(ctx, invitationRedeemCode.ID, user.ID); err != nil {
 							return nil, nil, ErrInvitationCodeInvalid
@@ -740,6 +777,22 @@ func authSourceSignupSettings(defaults *AuthSourceDefaultSettings, signupSource 
 		return defaults.WeChat, true
 	default:
 		return ProviderDefaultGrantSettings{}, false
+	}
+}
+
+// bindOAuthAffiliate initializes the affiliate profile and binds the inviter
+// for an OAuth-registered user. Failures are logged but never block registration.
+func (s *AuthService) bindOAuthAffiliate(ctx context.Context, userID int64, affiliateCode string) {
+	if s.affiliateService == nil || userID <= 0 {
+		return
+	}
+	if _, err := s.affiliateService.EnsureUserAffiliate(ctx, userID); err != nil {
+		logger.LegacyPrintf("service.auth", "[Auth] Failed to initialize affiliate profile for user %d: %v", userID, err)
+	}
+	if code := strings.TrimSpace(affiliateCode); code != "" {
+		if err := s.affiliateService.BindInviterByCode(ctx, userID, code); err != nil {
+			logger.LegacyPrintf("service.auth", "[Auth] Failed to bind affiliate inviter for user %d: %v", userID, err)
+		}
 	}
 }
 
@@ -1048,7 +1101,7 @@ func (s *AuthService) GenerateToken(user *User) (string, error) {
 		UserID:       user.ID,
 		Email:        user.Email,
 		Role:         user.Role,
-		TokenVersion: user.TokenVersion,
+		TokenVersion: resolvedTokenVersion(user),
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(expiresAt),
 			IssuedAt:  jwt.NewNumericDate(now),
@@ -1114,7 +1167,7 @@ func (s *AuthService) RefreshToken(ctx context.Context, oldTokenString string) (
 
 	// Security: Check TokenVersion to prevent refreshing revoked tokens
 	// This ensures tokens issued before a password change cannot be refreshed
-	if claims.TokenVersion != user.TokenVersion {
+	if claims.TokenVersion != resolvedTokenVersion(user) {
 		return "", ErrTokenRevoked
 	}
 
@@ -1342,7 +1395,7 @@ func (s *AuthService) generateRefreshToken(ctx context.Context, user *User, fami
 
 	data := &RefreshTokenData{
 		UserID:       user.ID,
-		TokenVersion: user.TokenVersion,
+		TokenVersion: resolvedTokenVersion(user),
 		FamilyID:     familyID,
 		CreatedAt:    now,
 		ExpiresAt:    now.Add(ttl),
@@ -1422,7 +1475,7 @@ func (s *AuthService) RefreshTokenPair(ctx context.Context, refreshToken string)
 	}
 
 	// 检查TokenVersion（密码更改后所有Token失效）
-	if data.TokenVersion != user.TokenVersion {
+	if data.TokenVersion != resolvedTokenVersion(user) {
 		// TokenVersion不匹配，撤销整个Token家族
 		_ = s.refreshTokenCache.DeleteTokenFamily(ctx, data.FamilyID)
 		return nil, ErrTokenRevoked
@@ -1467,8 +1520,42 @@ func (s *AuthService) RevokeAllUserSessions(ctx context.Context, userID int64) e
 	return s.refreshTokenCache.DeleteUserRefreshTokens(ctx, userID)
 }
 
+// RevokeAllUserTokens invalidates both stateless access tokens and refresh sessions.
+// Access/refresh token verification both depend on TokenVersion, so bumping it provides
+// immediate revocation even if refresh-token cache cleanup later fails.
+func (s *AuthService) RevokeAllUserTokens(ctx context.Context, userID int64) error {
+	user, err := s.userRepo.GetByID(ctx, userID)
+	if err != nil {
+		return fmt.Errorf("get user: %w", err)
+	}
+
+	user.TokenVersion++
+	if err := s.userRepo.Update(ctx, user); err != nil {
+		return fmt.Errorf("update user: %w", err)
+	}
+
+	if err := s.RevokeAllUserSessions(ctx, userID); err != nil {
+		logger.LegacyPrintf("service.auth", "[Auth] Failed to revoke refresh sessions after token invalidation for user %d: %v", userID, err)
+	}
+	return nil
+}
+
 // hashToken 计算Token的SHA256哈希
 func hashToken(token string) string {
 	hash := sha256.Sum256([]byte(token))
 	return hex.EncodeToString(hash[:])
+}
+
+func resolvedTokenVersion(user *User) int64 {
+	if user == nil {
+		return 0
+	}
+	if user.TokenVersionResolved {
+		return user.TokenVersion
+	}
+
+	material := strings.ToLower(strings.TrimSpace(user.Email)) + "\n" + user.PasswordHash
+	sum := sha256.Sum256([]byte(material))
+	fingerprint := int64(binary.BigEndian.Uint64(sum[:8]) & 0x7fffffffffffffff)
+	return user.TokenVersion ^ fingerprint
 }

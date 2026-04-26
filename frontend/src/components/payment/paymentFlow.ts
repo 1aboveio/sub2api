@@ -14,9 +14,10 @@ const VISIBLE_METHOD_ALIASES = {
   alipay_direct: 'alipay',
   wxpay: 'wxpay',
   wxpay_direct: 'wxpay',
+  stripe: 'stripe',
 } as const
 
-export type VisiblePaymentMethod = 'alipay' | 'wxpay'
+export type VisiblePaymentMethod = 'alipay' | 'wxpay' | 'stripe'
 export type StripeVisibleMethod = 'alipay' | 'wechat_pay'
 export type PaymentLaunchKind =
   | 'qr_waiting'
@@ -34,6 +35,7 @@ export interface PaymentRecoverySnapshot {
   expiresAt: string
   paymentType: string
   payUrl: string
+  outTradeNo: string
   clientSecret: string
   payAmount: number
   orderType: OrderType | ''
@@ -67,6 +69,7 @@ export interface BuildCreateOrderPayloadInput {
   orderType: OrderType
   planId?: number
   origin?: string
+  isMobile: boolean
   isWechatBrowser: boolean
 }
 
@@ -105,6 +108,7 @@ export function buildCreateOrderPayload(input: BuildCreateOrderPayloadInput): Cr
     amount: input.amount,
     payment_type: visibleMethod,
     order_type: input.orderType,
+    is_mobile: input.isMobile,
     payment_source: visibleMethod === 'wxpay' && input.isWechatBrowser
       ? 'wechat_in_app_resume'
       : 'hosted_redirect',
@@ -132,6 +136,7 @@ export function decidePaymentLaunch(
     expiresAt: result.expires_at || '',
     paymentType: visibleMethod,
     payUrl: result.pay_url || '',
+    outTradeNo: result.out_trade_no || '',
     clientSecret: result.client_secret || '',
     payAmount: result.pay_amount,
     orderType: context.orderType,
@@ -140,7 +145,12 @@ export function decidePaymentLaunch(
   }, context.now)
 
   if (baseState.clientSecret) {
-    const stripeMethod: StripeVisibleMethod = visibleMethod === 'wxpay' ? 'wechat_pay' : 'alipay'
+    // visibleMethod === 'stripe' means the user clicked the dedicated Stripe button
+    // and should land on the full Payment Element to choose a sub-method themselves.
+    const isStripeButton = visibleMethod === 'stripe'
+    const stripeMethod: StripeVisibleMethod | undefined = isStripeButton
+      ? undefined
+      : visibleMethod === 'wxpay' ? 'wechat_pay' : 'alipay'
     const kind: PaymentLaunchKind = stripeMethod === 'alipay' && !context.isMobile
       ? 'stripe_popup'
       : 'stripe_route'
@@ -227,6 +237,7 @@ export function readPaymentRecoverySnapshot(
       || typeof parsed.expiresAt !== 'string'
       || typeof parsed.paymentType !== 'string'
       || typeof parsed.payUrl !== 'string'
+      || (parsed.outTradeNo != null && typeof parsed.outTradeNo !== 'string')
       || typeof parsed.clientSecret !== 'string'
       || typeof parsed.payAmount !== 'number'
       || typeof parsed.paymentMode !== 'string'
@@ -241,7 +252,7 @@ export function readPaymentRecoverySnapshot(
     if (Number.isFinite(expiresAt) && expiresAt <= now) {
       return null
     }
-    if (options.resumeToken && parsed.resumeToken && parsed.resumeToken !== options.resumeToken) {
+    if (options.resumeToken && parsed.resumeToken !== options.resumeToken) {
       return null
     }
 
@@ -252,6 +263,7 @@ export function readPaymentRecoverySnapshot(
       expiresAt: parsed.expiresAt,
       paymentType: parsed.paymentType,
       payUrl: parsed.payUrl,
+      outTradeNo: parsed.outTradeNo || '',
       clientSecret: parsed.clientSecret,
       payAmount: parsed.payAmount,
       orderType: parsed.orderType === 'subscription' ? 'subscription' : 'balance',

@@ -194,6 +194,7 @@ export interface OAuthTokenResponse {
 }
 
 export interface PendingOAuthBindLoginResponse extends Partial<OAuthTokenResponse> {
+  auth_result?: string
   redirect?: string
   error?: string
   requires_2fa?: boolean
@@ -206,7 +207,9 @@ export interface PendingOAuthBindLoginResponse extends Partial<OAuthTokenRespons
 
 export type PendingOAuthExchangeResponse = PendingOAuthBindLoginResponse
 
-export interface PendingOAuthCreateAccountResponse extends OAuthTokenResponse {}
+export interface PendingOAuthCreateAccountResponse extends OAuthTokenResponse {
+  auth_result?: string
+}
 
 export interface PendingOAuthSendVerifyCodeResponse extends SendVerifyCodeResponse {
   auth_result?: string
@@ -278,33 +281,11 @@ export function persistOAuthTokenContext(tokens: Partial<OAuthTokenResponse>): v
   }
 }
 
-export function prepareOAuthBindAccessTokenCookie(): void {
-  if (typeof document === 'undefined' || typeof window === 'undefined') {
+export async function prepareOAuthBindAccessTokenCookie(): Promise<void> {
+  if (!getAuthToken()) {
     return
   }
-
-  const token = getAuthToken()
-  if (!token) {
-    return
-  }
-
-  const secure = window.location.protocol === 'https:' ? '; Secure' : ''
-  const path = resolveOAuthBindCookiePath()
-  document.cookie =
-    `oauth_bind_access_token=${encodeURIComponent(token)}; Path=${path}/auth/oauth; Max-Age=600; SameSite=Lax${secure}`
-}
-
-function resolveOAuthBindCookiePath(): string {
-  const apiBase = ((import.meta.env.VITE_API_BASE_URL as string | undefined) || '/api/v1').replace(/\/$/, '')
-
-  try {
-    return new URL(apiBase, window.location.origin).pathname.replace(/\/$/, '') || '/api/v1'
-  } catch {
-    if (apiBase.startsWith('/')) {
-      return apiBase
-    }
-    return '/api/v1'
-  }
+  await apiClient.post('/auth/oauth/bind-token')
 }
 
 /**
@@ -583,9 +564,10 @@ export async function resetPassword(request: ResetPasswordRequest): Promise<Rese
  */
 export async function completeLinuxDoOAuthRegistration(
   invitationCode: string,
-  decision?: OAuthAdoptionDecision
+  decision?: OAuthAdoptionDecision,
+  affiliateCode?: string
 ): Promise<OAuthTokenResponse> {
-  return createPendingLinuxDoOAuthAccount(invitationCode, decision)
+  return createPendingLinuxDoOAuthAccount(invitationCode, decision, affiliateCode)
 }
 
 /**
@@ -595,27 +577,32 @@ export async function completeLinuxDoOAuthRegistration(
  */
 export async function completeOIDCOAuthRegistration(
   invitationCode: string,
-  decision?: OAuthAdoptionDecision
+  decision?: OAuthAdoptionDecision,
+  affiliateCode?: string
 ): Promise<OAuthTokenResponse> {
-  return createPendingOIDCOAuthAccount(invitationCode, decision)
+  return createPendingOIDCOAuthAccount(invitationCode, decision, affiliateCode)
 }
 
 export async function completeWeChatOAuthRegistration(
   invitationCode: string,
-  decision?: OAuthAdoptionDecision
+  decision?: OAuthAdoptionDecision,
+  affiliateCode?: string
 ): Promise<OAuthTokenResponse> {
-  return createPendingWeChatOAuthAccount(invitationCode, decision)
+  return createPendingWeChatOAuthAccount(invitationCode, decision, affiliateCode)
 }
 
 async function createPendingOAuthAccount(
   provider: 'linuxdo' | 'oidc' | 'wechat',
   invitationCode: string,
-  decision?: OAuthAdoptionDecision
+  decision?: OAuthAdoptionDecision,
+  affiliateCode?: string
 ): Promise<PendingOAuthCreateAccountResponse> {
+  const normalizedAffiliateCode = affiliateCode?.trim()
   const { data } = await apiClient.post<PendingOAuthCreateAccountResponse>(
     `/auth/oauth/${provider}/complete-registration`,
     {
       invitation_code: invitationCode,
+      ...(normalizedAffiliateCode ? { aff_code: normalizedAffiliateCode } : {}),
       ...serializeOAuthAdoptionDecision(decision)
     }
   )
@@ -624,23 +611,26 @@ async function createPendingOAuthAccount(
 
 export async function createPendingLinuxDoOAuthAccount(
   invitationCode: string,
-  decision?: OAuthAdoptionDecision
+  decision?: OAuthAdoptionDecision,
+  affiliateCode?: string
 ): Promise<PendingOAuthCreateAccountResponse> {
-  return createPendingOAuthAccount('linuxdo', invitationCode, decision)
+  return createPendingOAuthAccount('linuxdo', invitationCode, decision, affiliateCode)
 }
 
 export async function createPendingOIDCOAuthAccount(
   invitationCode: string,
-  decision?: OAuthAdoptionDecision
+  decision?: OAuthAdoptionDecision,
+  affiliateCode?: string
 ): Promise<PendingOAuthCreateAccountResponse> {
-  return createPendingOAuthAccount('oidc', invitationCode, decision)
+  return createPendingOAuthAccount('oidc', invitationCode, decision, affiliateCode)
 }
 
 export async function createPendingWeChatOAuthAccount(
   invitationCode: string,
-  decision?: OAuthAdoptionDecision
+  decision?: OAuthAdoptionDecision,
+  affiliateCode?: string
 ): Promise<PendingOAuthCreateAccountResponse> {
-  return createPendingOAuthAccount('wechat', invitationCode, decision)
+  return createPendingOAuthAccount('wechat', invitationCode, decision, affiliateCode)
 }
 
 export async function completePendingOAuthBindLogin(

@@ -9,7 +9,14 @@ import {
   prepareOAuthBindAccessTokenCookie,
   type WeChatOAuthPublicSettings,
 } from './auth'
-import type { User, ChangePasswordRequest, NotifyEmailEntry, UserAuthProvider } from '@/types'
+import type {
+  User,
+  ChangePasswordRequest,
+  NotifyEmailEntry,
+  UserAuthProvider,
+  UserAffiliateDetail,
+  AffiliateTransferResponse
+} from '@/types'
 
 /**
  * Get current user profile
@@ -150,13 +157,13 @@ export function buildOAuthBindingStartURL(
     params.set('mode', mode)
   }
 
-  return `${normalized}/auth/oauth/${provider}/start?${params.toString()}`
+  return `${normalized}/auth/oauth/${provider}/bind/start?${params.toString()}`
 }
 
-export function startOAuthBinding(
+export async function startOAuthBinding(
   provider: BindableOAuthProvider,
   options: BuildOAuthBindingStartURLOptions = {}
-): void {
+): Promise<void> {
   if (typeof window === 'undefined') {
     return
   }
@@ -164,8 +171,18 @@ export function startOAuthBinding(
   if (!startURL) {
     return
   }
-  prepareOAuthBindAccessTokenCookie()
+  await prepareOAuthBindAccessTokenCookie()
   window.location.href = startURL
+}
+
+export async function getAffiliateDetail(): Promise<UserAffiliateDetail> {
+  const { data } = await apiClient.get<UserAffiliateDetail>('/user/aff')
+  return data
+}
+
+export async function transferAffiliateQuota(): Promise<AffiliateTransferResponse> {
+  const { data } = await apiClient.post<AffiliateTransferResponse>('/user/aff/transfer')
+  return data
 }
 
 export const userAPI = {
@@ -180,7 +197,9 @@ export const userAPI = {
   bindEmailIdentity,
   unbindAuthIdentity,
   buildOAuthBindingStartURL,
-  startOAuthBinding
+  startOAuthBinding,
+  getAffiliateDetail,
+  transferAffiliateQuota
 }
 
 export default userAPI

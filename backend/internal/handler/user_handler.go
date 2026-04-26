@@ -14,10 +14,11 @@ import (
 
 // UserHandler handles user-related requests
 type UserHandler struct {
-	userService  *service.UserService
-	authService  *service.AuthService
-	emailService *service.EmailService
-	emailCache   service.EmailCache
+	userService      *service.UserService
+	authService      *service.AuthService
+	emailService     *service.EmailService
+	emailCache       service.EmailCache
+	affiliateService *service.AffiliateService
 }
 
 // NewUserHandler creates a new UserHandler
@@ -26,12 +27,14 @@ func NewUserHandler(
 	authService *service.AuthService,
 	emailService *service.EmailService,
 	emailCache service.EmailCache,
+	affiliateService *service.AffiliateService,
 ) *UserHandler {
 	return &UserHandler{
-		userService:  userService,
-		authService:  authService,
-		emailService: emailService,
-		emailCache:   emailCache,
+		userService:      userService,
+		authService:      authService,
+		emailService:     emailService,
+		emailCache:       emailCache,
+		affiliateService: affiliateService,
 	}
 }
 
@@ -159,6 +162,44 @@ func (h *UserHandler) UpdateProfile(c *gin.Context) {
 	response.Success(c, profileResp)
 }
 
+// GetAffiliate returns the current user's affiliate details.
+// GET /api/v1/user/aff
+func (h *UserHandler) GetAffiliate(c *gin.Context) {
+	subject, ok := middleware2.GetAuthSubjectFromContext(c)
+	if !ok {
+		response.Unauthorized(c, "User not authenticated")
+		return
+	}
+
+	detail, err := h.affiliateService.GetAffiliateDetail(c.Request.Context(), subject.UserID)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, detail)
+}
+
+// TransferAffiliateQuota transfers all available affiliate quota into current balance.
+// POST /api/v1/user/aff/transfer
+func (h *UserHandler) TransferAffiliateQuota(c *gin.Context) {
+	subject, ok := middleware2.GetAuthSubjectFromContext(c)
+	if !ok {
+		response.Unauthorized(c, "User not authenticated")
+		return
+	}
+
+	transferred, balance, err := h.affiliateService.TransferAffiliateQuota(c.Request.Context(), subject.UserID)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+
+	response.Success(c, gin.H{
+		"transferred_quota": transferred,
+		"balance":           balance,
+	})
+}
+
 type StartIdentityBindingRequest struct {
 	Provider   string `json:"provider" binding:"required"`
 	RedirectTo string `json:"redirect_to"`
@@ -249,7 +290,7 @@ func (h *UserHandler) UnbindIdentity(c *gin.Context) {
 		return
 	}
 
-	updatedUser, err := h.userService.UnbindUserAuthProvider(
+	updatedUser, unbound, err := h.userService.UnbindUserAuthProviderWithResult(
 		c.Request.Context(),
 		subject.UserID,
 		c.Param("provider"),
@@ -257,6 +298,12 @@ func (h *UserHandler) UnbindIdentity(c *gin.Context) {
 	if err != nil {
 		response.ErrorFrom(c, err)
 		return
+	}
+	if unbound && h.authService != nil {
+		if err := h.authService.RevokeAllUserTokens(c.Request.Context(), subject.UserID); err != nil {
+			response.ErrorFrom(c, err)
+			return
+		}
 	}
 
 	profileResp, err := h.buildUserProfileResponse(c.Request.Context(), subject.UserID, updatedUser)
@@ -504,8 +551,12 @@ func inferUserProfileSources(user *service.User, identities service.UserIdentity
 
 	thirdParty := thirdPartyIdentityProviders(identities)
 	var avatarSource *userProfileSourceContext
-	if strings.TrimSpace(user.AvatarURL) != "" && len(thirdParty) == 1 {
-		avatarSource = buildUserProfileSourceContext(thirdParty[0].Provider)
+	avatarValue := strings.TrimSpace(user.AvatarURL)
+	for _, summary := range thirdParty {
+		if avatarValue != "" && avatarValue == strings.TrimSpace(summary.AvatarURL) {
+			avatarSource = buildUserProfileSourceContext(summary.Provider)
+			break
+		}
 	}
 
 	usernameValue := strings.TrimSpace(user.Username)
@@ -515,9 +566,6 @@ func inferUserProfileSources(user *service.User, identities service.UserIdentity
 			usernameSource = buildUserProfileSourceContext(summary.Provider)
 			break
 		}
-	}
-	if usernameSource == nil && usernameValue != "" && len(thirdParty) == 1 {
-		usernameSource = buildUserProfileSourceContext(thirdParty[0].Provider)
 	}
 
 	profileSources := map[string]*userProfileSourceContext{}
