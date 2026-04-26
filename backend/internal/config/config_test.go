@@ -311,6 +311,17 @@ func TestLoadDefaultSecurityToggles(t *testing.T) {
 	}
 }
 
+func TestLoadCommaSeparatedIngressEnv(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	t.Setenv("SERVER_TRUSTED_PROXIES", "127.0.0.1, 172.16.0.0/12")
+	t.Setenv("CORS_ALLOWED_ORIGINS", "https://app.example.com, https://admin.example.com")
+
+	cfg, err := Load()
+	require.NoError(t, err)
+	require.Equal(t, []string{"127.0.0.1", "172.16.0.0/12"}, cfg.Server.TrustedProxies)
+	require.Equal(t, []string{"https://app.example.com", "https://admin.example.com"}, cfg.CORS.AllowedOrigins)
+}
+
 func TestLoadDefaultServerMode(t *testing.T) {
 	resetViperWithJWTSecret(t)
 
