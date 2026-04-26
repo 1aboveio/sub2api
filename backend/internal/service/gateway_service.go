@@ -8725,13 +8725,13 @@ func (s *GatewayService) buildCountTokensRequestAnthropicAPIKeyPassthrough(
 	req.Header.Del("x-api-key")
 	req.Header.Del("x-goog-api-key")
 	req.Header.Del("cookie")
-	req.Header.Set("x-api-key", token)
+	setHeaderRaw(req.Header, "x-api-key", token)
 
-	if req.Header.Get("content-type") == "" {
-		req.Header.Set("content-type", "application/json")
+	if getHeaderRaw(req.Header, "content-type") == "" {
+		setHeaderRaw(req.Header, "content-type", "application/json")
 	}
-	if req.Header.Get("anthropic-version") == "" {
-		req.Header.Set("anthropic-version", "2023-06-01")
+	if getHeaderRaw(req.Header, "anthropic-version") == "" {
+		setHeaderRaw(req.Header, "anthropic-version", "2023-06-01")
 	}
 
 	s.debugLogGatewaySnapshot("UPSTREAM_FORWARD", req.Header, body, map[string]string{
@@ -8937,8 +8937,12 @@ func (s *GatewayService) buildCustomRelayURL(baseURL, path string, account *Acco
 }
 
 func (s *GatewayService) validateUpstreamBaseURL(raw string) (string, error) {
-	if s.cfg != nil && !s.cfg.Security.URLAllowlist.Enabled {
-		normalized, err := urlvalidator.ValidateURLFormat(raw, s.cfg.Security.URLAllowlist.AllowInsecureHTTP)
+	if s.cfg == nil || !s.cfg.Security.URLAllowlist.Enabled {
+		allowInsecureHTTP := true
+		if s.cfg != nil {
+			allowInsecureHTTP = s.cfg.Security.URLAllowlist.AllowInsecureHTTP
+		}
+		normalized, err := urlvalidator.ValidateURLFormat(raw, allowInsecureHTTP)
 		if err != nil {
 			return "", fmt.Errorf("invalid base_url: %w", err)
 		}
@@ -9110,6 +9114,7 @@ func (s *GatewayService) initDebugGatewayBodyFile(path string) {
 		slog.Error("failed to open gateway debug log file", "path", path, "error", err)
 		return
 	}
+	s.debugGatewayBody.Store(true)
 	s.debugGatewayBodyFile.Store(f)
 	slog.Info("gateway debug logging enabled", "path", path)
 }
@@ -9142,7 +9147,7 @@ func (s *GatewayService) debugLogGatewaySnapshot(tag string, headers http.Header
 
 	var buf strings.Builder
 	ts := time.Now().Format("2006-01-02 15:04:05.000")
-	fmt.Fprintf(&buf, "\n========== [%s] %s ==========\n", ts, tag)
+	fmt.Fprintf(&buf, "\n========== [%s] [%s] ==========\n", ts, tag)
 
 	// 1. context
 	if len(extra) > 0 {
