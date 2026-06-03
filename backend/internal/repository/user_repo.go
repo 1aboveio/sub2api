@@ -16,6 +16,7 @@ import (
 	dbgroup "github.com/Wei-Shaw/sub2api/ent/group"
 	"github.com/Wei-Shaw/sub2api/ent/identityadoptiondecision"
 	"github.com/Wei-Shaw/sub2api/ent/predicate"
+	"github.com/Wei-Shaw/sub2api/ent/schema/mixins"
 	dbuser "github.com/Wei-Shaw/sub2api/ent/user"
 	"github.com/Wei-Shaw/sub2api/ent/userallowedgroup"
 	"github.com/Wei-Shaw/sub2api/ent/usersubscription"
@@ -122,6 +123,23 @@ func (r *userRepository) GetByID(ctx context.Context, id int64) (*service.User, 
 		return nil, translatePersistenceError(err, service.ErrUserNotFound, nil)
 	}
 
+	out := userEntityToService(m)
+	groups, err := r.loadAllowedGroups(ctx, []int64{id})
+	if err != nil {
+		return nil, err
+	}
+	if v, ok := groups[id]; ok {
+		out.AllowedGroups = v
+	}
+	return out, nil
+}
+
+func (r *userRepository) GetByIDIncludeDeleted(ctx context.Context, id int64) (*service.User, error) {
+	ctx = mixins.SkipSoftDelete(ctx)
+	m, err := r.client.User.Query().Where(dbuser.IDEQ(id)).Only(ctx)
+	if err != nil {
+		return nil, translatePersistenceError(err, service.ErrUserNotFound, nil)
+	}
 	out := userEntityToService(m)
 	groups, err := r.loadAllowedGroups(ctx, []int64{id})
 	if err != nil {
@@ -334,7 +352,8 @@ func normalizeEmailAuthIdentitySubject(email string) string {
 	}
 	if strings.HasSuffix(normalized, service.LinuxDoConnectSyntheticEmailDomain) ||
 		strings.HasSuffix(normalized, service.OIDCConnectSyntheticEmailDomain) ||
-		strings.HasSuffix(normalized, service.WeChatConnectSyntheticEmailDomain) {
+		strings.HasSuffix(normalized, service.WeChatConnectSyntheticEmailDomain) ||
+		strings.HasSuffix(normalized, service.DingTalkConnectSyntheticEmailDomain) {
 		return ""
 	}
 	return normalized
@@ -404,6 +423,12 @@ func (r *userRepository) List(ctx context.Context, params pagination.PaginationP
 }
 
 func (r *userRepository) ListWithFilters(ctx context.Context, params pagination.PaginationParams, filters service.UserListFilters) ([]service.User, *pagination.PaginationResult, error) {
+	// SkipSoftDelete 仅作用于 User 身份解析（下方 Count/All）；订阅、分组等关联实体沿用原始 ctx，避免穿透到这些同样带软删除的实体而带出已删除行。
+	userCtx := ctx
+	if filters.IncludeDeleted {
+		userCtx = mixins.SkipSoftDelete(ctx)
+	}
+
 	q := r.client.User.Query()
 
 	if filters.Status != "" {
@@ -444,7 +469,7 @@ func (r *userRepository) ListWithFilters(ctx context.Context, params pagination.
 		q = q.Where(dbuser.IDIn(allowedUserIDs...))
 	}
 
-	total, err := q.Clone().Count(ctx)
+	total, err := q.Clone().Count(userCtx)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -456,7 +481,7 @@ func (r *userRepository) ListWithFilters(ctx context.Context, params pagination.
 		usersQuery = usersQuery.Order(order)
 	}
 
-	users, err := usersQuery.All(ctx)
+	users, err := usersQuery.All(userCtx)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -737,6 +762,37 @@ func (r *userRepository) UpdateConcurrency(ctx context.Context, id int64, amount
 	return nil
 }
 
+func (r *userRepository) BatchSetConcurrency(ctx context.Context, userIDs []int64, value int) (int, error) {
+	if len(userIDs) == 0 {
+		return 0, nil
+	}
+	if value < 0 {
+		value = 0
+	}
+	res, err := r.sql.ExecContext(ctx,
+		"UPDATE users SET concurrency = $1, updated_at = NOW() WHERE id = ANY($2) AND deleted_at IS NULL",
+		value, pq.Array(userIDs))
+	if err != nil {
+		return 0, fmt.Errorf("batch set concurrency: %w", err)
+	}
+	affected, _ := res.RowsAffected()
+	return int(affected), nil
+}
+
+func (r *userRepository) BatchAddConcurrency(ctx context.Context, userIDs []int64, delta int) (int, error) {
+	if len(userIDs) == 0 {
+		return 0, nil
+	}
+	res, err := r.sql.ExecContext(ctx,
+		"UPDATE users SET concurrency = GREATEST(concurrency + $1, 0), updated_at = NOW() WHERE id = ANY($2) AND deleted_at IS NULL",
+		delta, pq.Array(userIDs))
+	if err != nil {
+		return 0, fmt.Errorf("batch add concurrency: %w", err)
+	}
+	affected, _ := res.RowsAffected()
+	return int(affected), nil
+}
+
 func (r *userRepository) ExistsByEmail(ctx context.Context, email string) (bool, error) {
 	return r.client.User.Query().Where(userEmailLookupPredicate(email)).Exist(ctx)
 }
@@ -925,7 +981,7 @@ func userSignupSourceOrDefault(signupSource string) string {
 	switch strings.TrimSpace(strings.ToLower(signupSource)) {
 	case "", "email":
 		return "email"
-	case "linuxdo", "wechat", "oidc":
+	case "linuxdo", "wechat", "oidc", "dingtalk":
 		return strings.TrimSpace(strings.ToLower(signupSource))
 	default:
 		return "email"
