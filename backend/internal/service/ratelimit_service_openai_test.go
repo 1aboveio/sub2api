@@ -51,7 +51,7 @@ func TestCalculateOpenAI429ResetTime_5hExhausted(t *testing.T) {
 	headers.Set("x-codex-primary-used-percent", "50")
 	headers.Set("x-codex-primary-reset-after-seconds", "500000")
 	headers.Set("x-codex-primary-window-minutes", "10080") // 7 days
-	headers.Set("x-codex-secondary-used-percent", "0")
+	headers.Set("x-codex-secondary-used-percent", "100")
 	headers.Set("x-codex-secondary-reset-after-seconds", "3600") // 1 hour
 	headers.Set("x-codex-secondary-window-minutes", "300")       // 5 hours
 
@@ -122,7 +122,7 @@ func TestCalculateOpenAI429ResetTime_ReversedWindowOrder(t *testing.T) {
 
 	// Test when OpenAI sends primary as 5h and secondary as 7d (reversed)
 	headers := http.Header{}
-	headers.Set("x-codex-primary-used-percent", "0")           // This is 5h remaining%
+	headers.Set("x-codex-primary-used-percent", "100")         // This is 5h
 	headers.Set("x-codex-primary-reset-after-seconds", "3600") // 1 hour
 	headers.Set("x-codex-primary-window-minutes", "300")       // 5 hours - smaller!
 	headers.Set("x-codex-secondary-used-percent", "50")
@@ -180,7 +180,7 @@ func TestHandle429_OpenAIPersistsCodexSnapshotImmediately(t *testing.T) {
 	headers.Set("x-codex-primary-used-percent", "100")
 	headers.Set("x-codex-primary-reset-after-seconds", "604800")
 	headers.Set("x-codex-primary-window-minutes", "10080")
-	headers.Set("x-codex-secondary-used-percent", "0")
+	headers.Set("x-codex-secondary-used-percent", "100")
 	headers.Set("x-codex-secondary-reset-after-seconds", "18000")
 	headers.Set("x-codex-secondary-window-minutes", "300")
 
@@ -219,12 +219,50 @@ func TestHandle429_OpenAISyncsObservedPlanType(t *testing.T) {
 	require.Equal(t, account.ID, repo.rateLimitedID)
 }
 
+// TestHandle429_SkipsSparkShadow 外审第8轮 P1:spark 影子的限流状态只由 QueryUsage(/wham/usage
+// codex_bengalfox)维护;/responses 429 携带的 global x-codex-* 不得对影子做任何 DB 限流写入,
+// 否则会把 spark 误耦合到 global codex 窗口、冷却到 global reset。
+func TestHandle429_SkipsSparkShadow(t *testing.T) {
+	headers := http.Header{}
+	headers.Set("x-codex-primary-used-percent", "100")
+	headers.Set("x-codex-primary-reset-after-seconds", "604800")
+	headers.Set("x-codex-primary-window-minutes", "10080")
+	headers.Set("x-codex-secondary-used-percent", "100")
+	headers.Set("x-codex-secondary-reset-after-seconds", "18000")
+	headers.Set("x-codex-secondary-window-minutes", "300")
+
+	parentID := int64(900)
+	shadowRepo := &openAI429SnapshotRepo{}
+	shadowSvc := NewRateLimitService(shadowRepo, nil, nil, nil, nil)
+	shadow := &Account{
+		ID:              901,
+		Platform:        PlatformOpenAI,
+		Type:            AccountTypeOAuth,
+		ParentAccountID: &parentID,
+		QuotaDimension:  QuotaDimensionSpark,
+	}
+
+	shadowSvc.handle429(context.Background(), shadow, headers, nil)
+
+	require.Zero(t, shadowRepo.rateLimitedID, "spark shadow must not be SetRateLimited from /responses global 429")
+	require.Empty(t, shadowRepo.updatedExtra, "spark shadow must not get a codex snapshot from /responses 429")
+
+	// 反向对照:普通 OpenAI OAuth 账号仍按 global 429 限流。
+	normalRepo := &openAI429SnapshotRepo{}
+	normalSvc := NewRateLimitService(normalRepo, nil, nil, nil, nil)
+	normal := &Account{ID: 902, Platform: PlatformOpenAI, Type: AccountTypeOAuth}
+
+	normalSvc.handle429(context.Background(), normal, headers, nil)
+
+	require.Equal(t, normal.ID, normalRepo.rateLimitedID, "normal OpenAI OAuth account should still be rate limited")
+}
+
 func TestNormalizedCodexLimits(t *testing.T) {
 	// Test the Normalize() method directly
 	pUsed := 100.0
 	pReset := 384607
 	pWindow := 10080
-	sRemaining := 3.0
+	sUsed := 3.0
 	sReset := 17369
 	sWindow := 300
 
@@ -232,7 +270,7 @@ func TestNormalizedCodexLimits(t *testing.T) {
 		PrimaryUsedPercent:         &pUsed,
 		PrimaryResetAfterSeconds:   &pReset,
 		PrimaryWindowMinutes:       &pWindow,
-		SecondaryUsedPercent:       &sRemaining,
+		SecondaryUsedPercent:       &sUsed,
 		SecondaryResetAfterSeconds: &sReset,
 		SecondaryWindowMinutes:     &sWindow,
 	}
@@ -249,8 +287,8 @@ func TestNormalizedCodexLimits(t *testing.T) {
 	if normalized.Reset7dSeconds == nil || *normalized.Reset7dSeconds != 384607 {
 		t.Errorf("expected Reset7dSeconds=384607, got %v", normalized.Reset7dSeconds)
 	}
-	if normalized.Used5hPercent == nil || *normalized.Used5hPercent != 97.0 {
-		t.Errorf("expected Used5hPercent=97, got %v", normalized.Used5hPercent)
+	if normalized.Used5hPercent == nil || *normalized.Used5hPercent != 3.0 {
+		t.Errorf("expected Used5hPercent=3, got %v", normalized.Used5hPercent)
 	}
 	if normalized.Reset5hSeconds == nil || *normalized.Reset5hSeconds != 17369 {
 		t.Errorf("expected Reset5hSeconds=17369, got %v", normalized.Reset5hSeconds)
@@ -338,11 +376,11 @@ func TestRateLimitService_HandleUpstreamError_403FallsBackToRawBody(t *testing.T
 
 func TestNormalizedCodexLimits_OnlySecondaryData(t *testing.T) {
 	// Test when only secondary has data, no window_minutes
-	sRemaining := 60.0
+	sUsed := 60.0
 	sReset := 3000
 
 	snapshot := &OpenAICodexUsageSnapshot{
-		SecondaryUsedPercent:       &sRemaining,
+		SecondaryUsedPercent:       &sUsed,
 		SecondaryResetAfterSeconds: &sReset,
 		// No window_minutes, no primary data
 	}
@@ -354,8 +392,8 @@ func TestNormalizedCodexLimits_OnlySecondaryData(t *testing.T) {
 
 	// Legacy assumption: primary=7d, secondary=5h
 	// So secondary goes to 5h
-	if normalized.Used5hPercent == nil || *normalized.Used5hPercent != 40.0 {
-		t.Errorf("expected Used5hPercent=40, got %v", normalized.Used5hPercent)
+	if normalized.Used5hPercent == nil || *normalized.Used5hPercent != 60.0 {
+		t.Errorf("expected Used5hPercent=60, got %v", normalized.Used5hPercent)
 	}
 	if normalized.Reset5hSeconds == nil || *normalized.Reset5hSeconds != 3000 {
 		t.Errorf("expected Reset5hSeconds=3000, got %v", normalized.Reset5hSeconds)
@@ -370,13 +408,13 @@ func TestNormalizedCodexLimits_BothDataNoWindowMinutes(t *testing.T) {
 	// Test when both have data but no window_minutes
 	pUsed := 100.0
 	pReset := 400000
-	sRemaining := 30.0
+	sUsed := 50.0
 	sReset := 10000
 
 	snapshot := &OpenAICodexUsageSnapshot{
 		PrimaryUsedPercent:         &pUsed,
 		PrimaryResetAfterSeconds:   &pReset,
-		SecondaryUsedPercent:       &sRemaining,
+		SecondaryUsedPercent:       &sUsed,
 		SecondaryResetAfterSeconds: &sReset,
 		// No window_minutes
 	}
@@ -393,8 +431,8 @@ func TestNormalizedCodexLimits_BothDataNoWindowMinutes(t *testing.T) {
 	if normalized.Reset7dSeconds == nil || *normalized.Reset7dSeconds != 400000 {
 		t.Errorf("expected Reset7dSeconds=400000, got %v", normalized.Reset7dSeconds)
 	}
-	if normalized.Used5hPercent == nil || *normalized.Used5hPercent != 70.0 {
-		t.Errorf("expected Used5hPercent=70, got %v", normalized.Used5hPercent)
+	if normalized.Used5hPercent == nil || *normalized.Used5hPercent != 50.0 {
+		t.Errorf("expected Used5hPercent=50, got %v", normalized.Used5hPercent)
 	}
 	if normalized.Reset5hSeconds == nil || *normalized.Reset5hSeconds != 10000 {
 		t.Errorf("expected Reset5hSeconds=10000, got %v", normalized.Reset5hSeconds)
@@ -425,7 +463,7 @@ func TestCalculateOpenAI429ResetTime_UserProvidedScenario(t *testing.T) {
 	// This is the exact scenario from the user:
 	// codex_7d_used_percent: 100
 	// codex_7d_reset_after_seconds: 384607 (约4.5天后重置)
-	// codex_5h_used_percent: 97 (from upstream 3% remaining)
+	// codex_5h_used_percent: 3
 	// codex_5h_reset_after_seconds: 17369 (约4.8小时后重置)
 
 	svc := &RateLimitService{}
