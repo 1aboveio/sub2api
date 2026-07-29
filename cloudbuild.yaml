@@ -81,8 +81,6 @@ steps:
       - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPO}/${_IMAGE_NAME}:latest
       - --build-arg
       - COMMIT=$COMMIT_SHA
-      - --build-arg
-      - VERSION=$SHORT_SHA
       - .
 
   - name: gcr.io/cloud-builders/docker
