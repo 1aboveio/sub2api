@@ -1,0 +1,66 @@
+{
+	servers {
+		max_header_size 64KB
+		timeouts {
+			read_header 10s
+			idle 10m
+		}
+	}
+}
+
+(sub2api_proxy) {
+	reverse_proxy sub2api:8080 {
+		health_uri /health
+		health_interval 30s
+		health_timeout 10s
+		flush_interval -1
+		header_up X-Real-IP {remote_host}
+		header_up X-Forwarded-For {remote_host}
+		header_up X-Forwarded-Proto {scheme}
+		header_up X-Forwarded-Host {host}
+		transport http {
+			keepalive 120s
+			keepalive_idle_conns 256
+			response_header_timeout 300s
+			compression off
+		}
+	}
+}
+
+# Allows pre-cutover validation by static IP. The application remains the only
+# upstream and its container port is never published on the VM.
+http:// {
+	import sub2api_proxy
+}
+
+staging.gafeteria.com, www.gafeteria.com {
+	import sub2api_proxy
+
+	tls {
+		protocols tls1.2 tls1.3
+	}
+
+	encode {
+		zstd
+		gzip 6
+		minimum_length 256
+		match {
+			header Content-Type text/css*
+			header Content-Type text/html*
+			header Content-Type text/javascript*
+			header Content-Type application/json*
+			header Content-Type application/javascript*
+			header Content-Type application/xml*
+			header Content-Type image/svg+xml*
+		}
+	}
+
+	request_body {
+		max_size 256MB
+	}
+
+	log {
+		output stdout
+		format json
+	}
+}
