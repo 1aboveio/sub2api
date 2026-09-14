@@ -7,7 +7,9 @@
       :disabled="disabled"
       :aria-expanded="isOpen"
       :aria-haspopup="true"
-      aria-label="Select option"
+      :id="id"
+      :aria-label="ariaLabel ?? 'Select option'"
+      :aria-describedby="ariaDescribedby"
       :class="[
         'select-trigger',
         isOpen && 'select-trigger-open',
@@ -21,6 +23,18 @@
         <slot name="selected" :option="selectedOption">
           {{ selectedLabel }}
         </slot>
+      </span>
+      <span
+        v-if="clearable && hasValue && !disabled"
+        class="select-clear"
+        role="button"
+        tabindex="-1"
+        aria-label="Clear selection"
+        @click.stop="clearSelection"
+        @mousedown.stop
+        @keydown.enter.stop.prevent="clearSelection"
+      >
+        <Icon name="x" size="sm" />
       </span>
       <span class="select-icon">
         <Icon
@@ -46,13 +60,14 @@
           @keydown="onDropdownKeyDown"
         >
           <!-- Search input -->
-          <div v-if="searchable" class="select-search">
+          <div v-if="isSearchable" class="select-search">
             <Icon name="search" size="sm" class="text-gray-400" />
             <input
               ref="searchInputRef"
               v-model="searchQuery"
               type="text"
               :placeholder="searchPlaceholderText"
+              :aria-label="searchPlaceholderText"
               class="select-search-input"
               @click.stop
             />
@@ -96,7 +111,7 @@
 
             <!-- Empty state -->
             <div v-if="filteredOptions.length === 0" class="select-empty">
-              {{ emptyTextDisplay }}
+              {{ props.loading ? t('common.loading') : emptyTextDisplay }}
             </div>
           </div>
         </div>
@@ -128,28 +143,40 @@ interface Props {
   placeholder?: string
   disabled?: boolean
   error?: boolean
-  searchable?: boolean
+  searchable?: boolean | 'auto'
   searchPlaceholder?: string
   emptyText?: string
   valueKey?: string
   labelKey?: string
   creatable?: boolean
   creatablePrefix?: string
+  clearable?: boolean
+  id?: string
+  ariaLabel?: string
+  ariaDescribedby?: string
+  /** 远程搜索模式：输入不在本地过滤 options，而是防抖后 emit('search', query)，由父组件请求数据更新 options */
+  remote?: boolean
+  /** 远程搜索模式下的加载态：options 为空时下拉显示 loading 文案 */
+  loading?: boolean
 }
 
 interface Emits {
   (e: 'update:modelValue', value: string | number | boolean | null): void
   (e: 'change', value: string | number | boolean | null, option: SelectOption | null): void
+  (e: 'search', query: string): void
 }
 
 const props = withDefaults(defineProps<Props>(), {
   disabled: false,
   error: false,
-  searchable: false,
+  searchable: 'auto',
   creatable: false,
   creatablePrefix: '',
+  clearable: false,
   valueKey: 'value',
-  labelKey: 'label'
+  labelKey: 'label',
+  remote: false,
+  loading: false
 })
 
 const emit = defineEmits<Emits>()
@@ -164,21 +191,43 @@ const dropdownRef = ref<HTMLElement | null>(null)
 const optionsListRef = ref<HTMLElement | null>(null)
 const dropdownPosition = ref<'bottom' | 'top'>('bottom')
 const triggerRect = ref<DOMRect | null>(null)
+const dropdownViewportPadding = 8
+const dropdownMinimumWidth = 200
 
 // i18n placeholders
 const placeholderText = computed(() => props.placeholder ?? t('common.selectOption'))
 const searchPlaceholderText = computed(() => props.searchPlaceholder ?? t('common.searchPlaceholder'))
 const emptyTextDisplay = computed(() => props.emptyText ?? t('common.noOptionsFound'))
 
+// 远程搜索的防抖间隔（对齐 OpenAIFastPolicyUserSelector 的 300ms 惯例）。
+const REMOTE_SEARCH_DEBOUNCE_MS = 300
+let remoteSearchTimer: ReturnType<typeof setTimeout> | null = null
+
+const isSearchable = computed(() => {
+  // 远程搜索模式始终显示搜索框（选项只是服务端结果的一页）。
+  if (props.remote) return true
+  if (props.searchable === 'auto') return props.options.length > 5
+  return props.searchable
+})
+
 // Computed style for teleported dropdown
 const dropdownStyle = computed(() => {
   if (!triggerRect.value) return {}
 
   const rect = triggerRect.value
+  const viewportRight = Math.max(dropdownViewportPadding, window.innerWidth - dropdownViewportPadding)
+  const left = Math.min(
+    Math.max(dropdownViewportPadding, rect.left),
+    viewportRight
+  )
+  const availableWidth = Math.max(0, viewportRight - left)
+  const preferredMinWidth = Math.max(dropdownMinimumWidth, rect.width)
+  const minWidth = Math.min(preferredMinWidth, availableWidth)
   const style: Record<string, string> = {
     position: 'fixed',
-    left: `${rect.left}px`,
-    minWidth: `${rect.width}px`,
+    left: `${left}px`,
+    minWidth: `${minWidth}px`,
+    maxWidth: `${availableWidth}px`,
     zIndex: '100000020'
   }
 
@@ -234,9 +283,14 @@ const selectedLabel = computed(() => {
   return placeholderText.value
 })
 
+const hasValue = computed(
+  () => props.modelValue !== null && props.modelValue !== undefined && props.modelValue !== ''
+)
+
 const filteredOptions = computed(() => {
   let opts = props.options as any[]
-  if (props.searchable && searchQuery.value) {
+  // 远程搜索模式不在本地过滤（选项即服务端搜索结果的一页）。
+  if (isSearchable.value && searchQuery.value && !props.remote) {
     const query = searchQuery.value.toLowerCase()
     opts = opts.filter((opt) => {
       // Match label
@@ -328,7 +382,7 @@ watch(isOpen, (open) => {
         : initialIdx
     }
 
-    if (props.searchable) {
+    if (isSearchable.value) {
       nextTick(() => searchInputRef.value?.focus())
     }
     // Add scroll listener to update position
@@ -337,9 +391,24 @@ watch(isOpen, (open) => {
   } else {
     searchQuery.value = ''
     focusedIndex.value = -1
+    // 关闭时取消仍在排队的远程搜索（避免关闭后尾随 emit 一次 search(''))。
+    if (remoteSearchTimer) {
+      clearTimeout(remoteSearchTimer)
+      remoteSearchTimer = null
+    }
     window.removeEventListener('scroll', updateTriggerRect, { capture: true })
     window.removeEventListener('resize', calculateDropdownPosition)
   }
+})
+
+// 远程搜索：输入防抖后交给父组件请求（!isOpen 抑制关闭重置 searchQuery 触发的空 query）。
+watch(searchQuery, (query) => {
+  if (!props.remote || !isOpen.value) return
+  if (remoteSearchTimer) clearTimeout(remoteSearchTimer)
+  remoteSearchTimer = setTimeout(() => {
+    remoteSearchTimer = null
+    emit('search', query.trim())
+  }, REMOTE_SEARCH_DEBOUNCE_MS)
 })
 
 const selectOption = (option: any) => {
@@ -348,6 +417,12 @@ const selectOption = (option: any) => {
   emit('change', value, option)
   isOpen.value = false
   triggerRef.value?.focus()
+}
+
+const clearSelection = () => {
+  if (props.disabled) return
+  emit('update:modelValue', null)
+  emit('change', null, null)
 }
 
 // Keyboards
@@ -421,6 +496,10 @@ onUnmounted(() => {
   document.removeEventListener('click', handleClickOutside)
   window.removeEventListener('scroll', updateTriggerRect, { capture: true })
   window.removeEventListener('resize', calculateDropdownPosition)
+  if (remoteSearchTimer) {
+    clearTimeout(remoteSearchTimer)
+    remoteSearchTimer = null
+  }
 })
 </script>
 
@@ -456,6 +535,12 @@ onUnmounted(() => {
 .select-icon {
   @apply flex-shrink-0 text-gray-400 dark:text-dark-400;
 }
+
+.select-clear {
+  @apply flex flex-shrink-0 cursor-pointer items-center justify-center;
+  @apply rounded text-gray-400 transition-colors;
+  @apply hover:text-gray-600 dark:hover:text-gray-200;
+}
 </style>
 
 <style>
@@ -482,7 +567,7 @@ onUnmounted(() => {
 }
 
 .select-dropdown-portal .select-options {
-  @apply max-h-60 overflow-y-auto py-1 outline-none;
+  @apply max-h-80 overflow-y-auto py-1 outline-none;
 }
 
 .select-dropdown-portal .select-option {

@@ -1,0 +1,23 @@
+[Unit]
+Description=Sub2API Podman Compose stack
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+User=sub2api
+Group=sub2api
+WorkingDirectory=/opt/sub2api
+EnvironmentFile=/opt/sub2api/compose.env
+LimitNPROC=65536
+TasksMax=infinity
+ExecStart=/opt/sub2api/run-compose.sh up -d
+ExecStartPost=/opt/sub2api/wait-healthy.sh
+ExecReload=/opt/sub2api/run-compose.sh up -d
+ExecStop=/opt/sub2api/run-compose.sh down
+TimeoutStartSec=900
+TimeoutStopSec=120
+
+[Install]
+WantedBy=multi-user.target

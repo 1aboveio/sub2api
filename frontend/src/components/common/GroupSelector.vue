@@ -5,13 +5,30 @@
       <span class="font-normal text-gray-400">{{ t('common.selectedCount', { count: modelValue.length }) }}</span>
     </label>
     <div
-      class="grid max-h-32 grid-cols-2 gap-1 overflow-y-auto rounded-lg border border-gray-200 bg-gray-50 p-2 dark:border-dark-600 dark:bg-dark-800"
+      v-if="isSearchable"
+      class="flex items-center gap-2 rounded-t-lg border border-b-0 border-gray-200 bg-gray-50 px-3 py-2 dark:border-dark-600 dark:bg-dark-800"
+    >
+      <Icon name="search" size="sm" class="shrink-0 text-gray-400" />
+      <input
+        v-model="searchText"
+        type="text"
+        :placeholder="t('common.searchPlaceholder')"
+        class="flex-1 bg-transparent text-sm text-gray-900 placeholder:text-gray-400 focus:outline-none dark:text-gray-100 dark:placeholder:text-dark-400"
+      />
+    </div>
+    <div
+      :class="[
+        'grid max-h-32 grid-cols-2 gap-1 overflow-y-auto p-2',
+        isSearchable
+          ? 'rounded-b-lg border border-t-0 border-gray-200 bg-gray-50 dark:border-dark-600 dark:bg-dark-800'
+          : 'rounded-lg border border-gray-200 bg-gray-50 dark:border-dark-600 dark:bg-dark-800'
+      ]"
     >
       <label
         v-for="group in filteredGroups"
         :key="group.id"
         class="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 transition-colors hover:bg-white dark:hover:bg-dark-700"
-        :title="t('admin.groups.rateAndAccounts', { rate: group.rate_multiplier, count: group.account_count || 0 })"
+        :title="group.rate_multiplier == null ? group.name : t('admin.groups.rateAndAccounts', { rate: group.rate_multiplier, count: group.account_count || 0 })"
       >
         <input
           type="checkbox"
@@ -23,8 +40,8 @@
         <GroupBadge
           :name="group.name"
           :platform="group.platform"
-          :subscription-type="group.subscription_type"
-          :rate-multiplier="group.rate_multiplier"
+          :subscription-type="group.subscription_type || undefined"
+          :rate-multiplier="group.rate_multiplier == null ? undefined : group.rate_multiplier"
           class="min-w-0 flex-1"
         />
         <span class="shrink-0 text-xs text-gray-400">{{ group.account_count || 0 }}</span>
@@ -40,39 +57,73 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import GroupBadge from './GroupBadge.vue'
-import type { AdminGroup, GroupPlatform } from '@/types'
+import Icon from '@/components/icons/Icon.vue'
+import type { Group, GroupPlatform } from '@/types'
+import { useAuthStore } from '@/stores'
 
 const { t } = useI18n()
+const authStore = useAuthStore()
 
 interface Props {
   modelValue: number[]
-  groups: AdminGroup[]
+  groups: (Group & { account_count?: number })[]
   platform?: GroupPlatform // Optional platform filter
   mixedScheduling?: boolean // For antigravity accounts: allow anthropic/gemini groups
+  searchable?: boolean | 'auto'
 }
 
-const props = defineProps<Props>()
+const props = withDefaults(defineProps<Props>(), {
+  searchable: 'auto'
+})
 const emit = defineEmits<{
   'update:modelValue': [value: number[]]
 }>()
 
+const searchText = ref('')
+
+const isSearchable = computed(() => {
+  if (props.searchable === 'auto') return props.groups.length > 5
+  return props.searchable
+})
+
 // Filter groups by platform if specified
 const filteredGroups = computed(() => {
-  if (!props.platform) {
-    return props.groups
+  let result = authStore.isSimpleMode
+    ? props.groups.filter((g) => g.platform !== 'composite')
+    : props.groups
+  if (props.platform) {
+    // antigravity 账户启用混合调度后，可选择 anthropic/gemini 分组
+    if (props.platform === 'antigravity' && props.mixedScheduling) {
+      result = result.filter(
+        (g) => g.platform === 'antigravity' || g.platform === 'anthropic' || g.platform === 'gemini' || g.platform === 'composite'
+      )
+    } else {
+      // 默认：只能选择同 platform 的分组；composite 分组可接收任意具体平台账号
+      result = result.filter((g) => g.platform === props.platform || g.platform === 'composite')
+    }
   }
-  // antigravity 账户启用混合调度后，可选择 anthropic/gemini 分组
-  if (props.platform === 'antigravity' && props.mixedScheduling) {
-    return props.groups.filter(
-      (g) => g.platform === 'antigravity' || g.platform === 'anthropic' || g.platform === 'gemini'
+  if (isSearchable.value && searchText.value) {
+    const q = searchText.value.toLowerCase()
+    result = result.filter(
+      (g) => g.name.toLowerCase().includes(q) || g.description?.toLowerCase().includes(q)
     )
   }
-  // 默认：只能选择同 platform 的分组
-  return props.groups.filter((g) => g.platform === props.platform)
+  return result
 })
+
+watch(
+  () => [authStore.isSimpleMode, props.groups, props.modelValue] as const,
+  () => {
+    if (!authStore.isSimpleMode || props.groups.length === 0) return
+    const visibleIDs = new Set(props.groups.filter((group) => group.platform !== 'composite').map((group) => group.id))
+    const cleaned = props.modelValue.filter((id) => visibleIDs.has(id))
+    if (cleaned.length !== props.modelValue.length) emit('update:modelValue', cleaned)
+  },
+  { immediate: true, deep: true }
+)
 
 const handleChange = (groupId: number, checked: boolean) => {
   const newValue = checked

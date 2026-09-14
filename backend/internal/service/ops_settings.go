@@ -6,6 +6,9 @@ import (
 	"errors"
 	"strings"
 	"time"
+
+	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 )
 
 const (
@@ -359,8 +362,10 @@ func (s *OpsService) UpdateOpsAlertRuntimeSettings(ctx context.Context, cfg *Ops
 func defaultOpsAdvancedSettings() *OpsAdvancedSettings {
 	return &OpsAdvancedSettings{
 		DataRetention: OpsDataRetentionSettings{
-			CleanupEnabled:             false,
-			CleanupSchedule:            "0 2 * * *",
+			// Keep the DB-backed default aligned with ops.cleanup.enabled so a
+			// first settings read cannot silently disable configured retention.
+			CleanupEnabled:             true,
+			CleanupSchedule:            opsCleanupDefaultSchedule,
 			ErrorLogRetentionDays:      30,
 			MinuteMetricsRetentionDays: 30,
 			HourlyMetricsRetentionDays: 30,
@@ -368,9 +373,11 @@ func defaultOpsAdvancedSettings() *OpsAdvancedSettings {
 		Aggregation: OpsAggregationSettings{
 			AggregationEnabled: false,
 		},
+		OpenAIAccountQuotaAutoPause:     OpsOpenAIAccountQuotaAutoPauseSettings{},
 		IgnoreCountTokensErrors:         true,  // count_tokens 404 是预期行为，默认忽略
 		IgnoreContextCanceled:           true,  // Default to true - client disconnects are not errors
 		IgnoreNoAvailableAccounts:       false, // Default to false - this is a real routing issue
+		IgnoreInvalidApiKeyErrors:       true,  // Legacy compatibility field; admission rejects are always excluded.
 		IgnoreInsufficientBalanceErrors: false, // 默认不忽略，余额不足可能需要关注
 		DisplayOpenAITokenStats:         false,
 		DisplayAlertEvents:              true,
@@ -379,21 +386,37 @@ func defaultOpsAdvancedSettings() *OpsAdvancedSettings {
 	}
 }
 
+func defaultOpsAdvancedSettingsForConfig(cfg *config.Config) *OpsAdvancedSettings {
+	defaults := defaultOpsAdvancedSettings()
+	if cfg != nil {
+		defaults.DataRetention.CleanupEnabled = cfg.Ops.Cleanup.Enabled
+	}
+	return defaults
+}
+
 func normalizeOpsAdvancedSettings(cfg *OpsAdvancedSettings) {
 	if cfg == nil {
 		return
 	}
+	// Admission rejects are a security/traffic concern, not an operational
+	// request-error category. Keep the legacy field true for old clients but do
+	// not allow it to re-enable those rows.
+	cfg.IgnoreInvalidApiKeyErrors = true
+	cfg.OpenAIAccountQuotaAutoPause.DefaultThreshold5h = clampOpsQuotaAutoPauseThreshold(cfg.OpenAIAccountQuotaAutoPause.DefaultThreshold5h)
+	cfg.OpenAIAccountQuotaAutoPause.DefaultThreshold7d = clampOpsQuotaAutoPauseThreshold(cfg.OpenAIAccountQuotaAutoPause.DefaultThreshold7d)
 	cfg.DataRetention.CleanupSchedule = strings.TrimSpace(cfg.DataRetention.CleanupSchedule)
 	if cfg.DataRetention.CleanupSchedule == "" {
-		cfg.DataRetention.CleanupSchedule = "0 2 * * *"
+		cfg.DataRetention.CleanupSchedule = opsCleanupDefaultSchedule
 	}
-	if cfg.DataRetention.ErrorLogRetentionDays <= 0 {
+	// 保留天数：0 表示每次定时清理全部（清空所有），> 0 表示按天数保留；
+	// 仅在拿到非法的负数时回填默认值，避免覆盖用户主动设的 0。
+	if cfg.DataRetention.ErrorLogRetentionDays < 0 {
 		cfg.DataRetention.ErrorLogRetentionDays = 30
 	}
-	if cfg.DataRetention.MinuteMetricsRetentionDays <= 0 {
+	if cfg.DataRetention.MinuteMetricsRetentionDays < 0 {
 		cfg.DataRetention.MinuteMetricsRetentionDays = 30
 	}
-	if cfg.DataRetention.HourlyMetricsRetentionDays <= 0 {
+	if cfg.DataRetention.HourlyMetricsRetentionDays < 0 {
 		cfg.DataRetention.HourlyMetricsRetentionDays = 30
 	}
 	// Normalize auto refresh interval (default 30 seconds)
@@ -402,18 +425,29 @@ func normalizeOpsAdvancedSettings(cfg *OpsAdvancedSettings) {
 	}
 }
 
+func clampOpsQuotaAutoPauseThreshold(value float64) float64 {
+	if value <= 0 {
+		return 0
+	}
+	if value > 1 {
+		return 1
+	}
+	return value
+}
+
 func validateOpsAdvancedSettings(cfg *OpsAdvancedSettings) error {
 	if cfg == nil {
 		return errors.New("invalid config")
 	}
-	if cfg.DataRetention.ErrorLogRetentionDays < 1 || cfg.DataRetention.ErrorLogRetentionDays > 365 {
-		return errors.New("error_log_retention_days must be between 1 and 365")
+	// 保留天数：0 表示每次清理全部，1-365 表示按天数保留。
+	if cfg.DataRetention.ErrorLogRetentionDays < 0 || cfg.DataRetention.ErrorLogRetentionDays > 365 {
+		return errors.New("error_log_retention_days must be between 0 and 365")
 	}
-	if cfg.DataRetention.MinuteMetricsRetentionDays < 1 || cfg.DataRetention.MinuteMetricsRetentionDays > 365 {
-		return errors.New("minute_metrics_retention_days must be between 1 and 365")
+	if cfg.DataRetention.MinuteMetricsRetentionDays < 0 || cfg.DataRetention.MinuteMetricsRetentionDays > 365 {
+		return errors.New("minute_metrics_retention_days must be between 0 and 365")
 	}
-	if cfg.DataRetention.HourlyMetricsRetentionDays < 1 || cfg.DataRetention.HourlyMetricsRetentionDays > 365 {
-		return errors.New("hourly_metrics_retention_days must be between 1 and 365")
+	if cfg.DataRetention.HourlyMetricsRetentionDays < 0 || cfg.DataRetention.HourlyMetricsRetentionDays > 365 {
+		return errors.New("hourly_metrics_retention_days must be between 0 and 365")
 	}
 	if cfg.AutoRefreshIntervalSec < 15 || cfg.AutoRefreshIntervalSec > 300 {
 		return errors.New("auto_refresh_interval_seconds must be between 15 and 300")
@@ -422,32 +456,21 @@ func validateOpsAdvancedSettings(cfg *OpsAdvancedSettings) error {
 }
 
 func (s *OpsService) GetOpsAdvancedSettings(ctx context.Context) (*OpsAdvancedSettings, error) {
-	defaultCfg := defaultOpsAdvancedSettings()
-	if s == nil || s.settingRepo == nil {
-		return defaultCfg, nil
-	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
+	_ = ctx
+	cfg := s.OpsAdvancedSettingsSnapshot()
+	return &cfg, nil
+}
 
-	raw, err := s.settingRepo.GetValue(ctx, SettingKeyOpsAdvancedSettings)
-	if err != nil {
-		if errors.Is(err, ErrSettingNotFound) {
-			if b, mErr := json.Marshal(defaultCfg); mErr == nil {
-				_ = s.settingRepo.Set(ctx, SettingKeyOpsAdvancedSettings, string(b))
-			}
-			return defaultCfg, nil
+// OpsAdvancedSettingsSnapshot returns a value copy for request hot paths. It
+// avoids both repository I/O and pointer escape/allocation.
+func (s *OpsService) OpsAdvancedSettingsSnapshot() OpsAdvancedSettings {
+	if s != nil {
+		if snapshot := s.runtimeSettings.Load(); snapshot != nil {
+			return snapshot.advanced
 		}
-		return nil, err
+		return *defaultOpsAdvancedSettingsForConfig(s.cfg)
 	}
-
-	cfg := defaultOpsAdvancedSettings()
-	if err := json.Unmarshal([]byte(raw), cfg); err != nil {
-		return defaultCfg, nil
-	}
-
-	normalizeOpsAdvancedSettings(cfg)
-	return cfg, nil
+	return *defaultOpsAdvancedSettings()
 }
 
 func (s *OpsService) UpdateOpsAdvancedSettings(ctx context.Context, cfg *OpsAdvancedSettings) (*OpsAdvancedSettings, error) {
@@ -472,6 +495,21 @@ func (s *OpsService) UpdateOpsAdvancedSettings(ctx context.Context, cfg *OpsAdva
 	}
 	if err := s.settingRepo.Set(ctx, SettingKeyOpsAdvancedSettings, string(raw)); err != nil {
 		return nil, err
+	}
+	s.storeAdvancedSettingsSnapshot(cfg)
+	// Push the new quota auto-pause settings straight into the in-memory cache that
+	// the OpenAI scheduling hot path reads, so the next request observes the new value
+	// without waiting for the background refresher's TTL.
+	if s.quotaAutoPauseSink != nil {
+		s.quotaAutoPauseSink(cfg.OpenAIAccountQuotaAutoPause)
+	}
+
+	// notify cleanup service to reload schedule/enabled.
+	if s.cleanupReloader != nil {
+		if rerr := s.cleanupReloader.Reload(ctx); rerr != nil {
+			logger.LegacyPrintf("service.ops_settings",
+				"[OpsSettings] cleanup reload after advanced-settings update failed: %v", rerr)
+		}
 	}
 
 	updated := &OpsAdvancedSettings{}
