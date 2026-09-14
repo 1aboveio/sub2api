@@ -63,6 +63,13 @@ sudo systemctl restart sub2api-compose.service
   minutes.
 - Alerts use the existing operations email notification channel.
 
+## Deployment automation
+
+- Regional Cloud Build trigger `sub2api-prod` is disabled.
+- Regional Cloud Build trigger `sub2api-dev` is disabled.
+- Manual Cloud Build submissions remain available. GitHub CI and security
+  workflows are separate and remain enabled.
+
 ## Validation completed
 
 - Application and Valkey health checks pass; Caddy serves `/health` externally.
