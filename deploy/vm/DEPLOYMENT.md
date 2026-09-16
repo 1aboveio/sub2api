@@ -139,8 +139,14 @@ Production DNS was cut over on 2026-09-14. Cloudflare serves DNS-only A records
 for `www.gafeteria.com` and `staging.gafeteria.com`, both targeting
 `35.206.117.176` with a 120-second TTL. There is no production AAAA record.
 
-Cloud Run revision `sub2api-prod-00020-gfj` and Memorystore `ai-pro` remain
-active for rollback. To revert, replace the Cloudflare `www` A record with the
-previous DNS-only CNAME `ghs.googlehosted.com` using automatic TTL. A sustained
-300-second upstream stream remains pending; authenticated completion and SSE
-framing pass on both staging and production hostnames.
+The former Cloud Run service `sub2api-prod` and Memorystore instance `ai-pro`
+were retired on 2026-09-16 after Cloud Run received no post-cutover requests
+and the VM remained healthy under production traffic. The managed Valkey
+instance had persistence disabled, so no durable data was removed.
+
+The previous DNS-only CNAME to `ghs.googlehosted.com` is no longer a live
+rollback target. Recover the VM from the tested snapshots above, or recreate
+Cloud Run and managed Valkey from the retained Artifact Registry image,
+configuration, Cloud SQL database, and Secret Manager values before changing
+DNS. A sustained 300-second upstream stream remains pending; authenticated
+completion and SSE framing pass on both staging and production hostnames.
