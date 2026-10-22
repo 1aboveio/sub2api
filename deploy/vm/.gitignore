@@ -1,2 +1,4 @@
 compose.env
 runtime.env
+cloudflared.env
+cloudflared-image.env
