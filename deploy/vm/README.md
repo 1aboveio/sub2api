@@ -41,15 +41,16 @@ acceptance window. Their deletion is intentionally outside this deployment.
 
 ## Caddy origin hostname preparation
 
-`sub2api.gapsee.com` is also configured on Caddy for public-origin validation.
-This does not move traffic: its proxied CNAME still targets the existing
-Cloudflare Tunnel. Changing it to `www.gafeteria.com`, changing proxy status,
-or removing the Tunnel requires a separate approved cutover.
+`sub2api.gapsee.com` is configured on Caddy and became the primary public-origin
+route on 2026-10-28. Its proxied CNAME targets `www.gafeteria.com`; the Tunnel
+and `sub2api-cf.gapsee.com` remain available for rollback. Removing the Tunnel
+or changing Cloudflare proxy status requires separate approval.
 
-Because the Tunnel bypasses Caddy, Caddy cannot complete its normal HTTP/TLS
-certificate challenges for this hostname. Debian packages `certbot` and
-`python3-certbot-dns-cloudflare` instead issue and renew a public certificate
-using temporary `_acme-challenge.sub2api.gapsee.com` TXT records. The runtime
+The certificate was provisioned while the primary hostname still used the
+Tunnel, which bypassed Caddy's normal HTTP/TLS certificate challenges. Debian
+packages `certbot` and `python3-certbot-dns-cloudflare` continue to issue and
+renew the public certificate using temporary
+`_acme-challenge.sub2api.gapsee.com` TXT records. The runtime
 credential file `/etc/letsencrypt/cloudflare-sub2api.ini` is root-owned mode
 `0600`; its token has DNS Write and Zone Read only for the `gapsee.com` zone.
 The account-wide Cloudflare key is not installed on the VM.
@@ -114,27 +115,37 @@ sudo certbot renew --cert-name sub2api.gapsee.com --dry-run
 sudo systemctl start sub2api-caddy-certificate.service
 ```
 
-Verify the public Tunnel hostname, its alias, and both Gafeteria hostnames
-remain healthy. To roll back preparation, restore the saved Caddyfile in
-place, validate and reload it; leave the public DNS record and Tunnel alone.
+Verify the primary hostname, the Tunnel alias, and both Gafeteria hostnames
+remain healthy. To undo Caddy hostname preparation after the public-origin
+cutover, first restore the primary DNS record to the Tunnel as described below
+and validate that route. Only then restore the saved pre-preparation Caddyfile
+in place, validate and reload it. Do not remove Caddy's primary hostname while
+DNS still targets the VM. Leave the Tunnel alias running.
 Disable this lineage's renewal and `sub2api-caddy-certificate.timer` only after
 the Caddy hostname is removed. Never revoke a token or disable a shared
 certificate timer without checking its other consumers.
 
-## Cloudflare Tunnel access
+## Public access and Tunnel rollback
 
 Clients use `https://sub2api.gapsee.com/v1` with their existing API keys.
-No Clash client is required. After the user confirmed the pilot connection
-worked, this hostname moved from nginx to Cloudflare Tunnel on 2026-10-22
-at 08:08:20 UTC. `https://sub2api-cf.gapsee.com/v1` remains an alias for
-the same Tunnel. The origin `https://www.gafeteria.com/v1` remains a
-separate route.
+No Clash client is required. At 2026-10-28 16:20:30 UTC, the user-approved
+cutover changed this hostname from the Tunnel to a Cloudflare-proxied CNAME
+targeting `www.gafeteria.com`. Its request path is Cloudflare → public VM
+HTTPS → Caddy → `http://sub2api:8080` on the Podman network.
 
 Cloudflare DNS record `f5feaa51d2303191448092ccb30e1b55` in zone
-`5075f3a8cc751a78fc6894c5b4968871` is now a proxied CNAME to
-`837bed69-e168-4b62-aa08-ac4a5d23f8f5.cfargotunnel.com`. The previous
-nginx origin, `119.28.3.34`, remains running for DNS-cache convergence
-and rollback. Cached DNS answers can continue using nginx until they expire.
+`5075f3a8cc751a78fc6894c5b4968871` retains proxying and automatic TTL. Only its
+target changed. `www.gafeteria.com` resolves directly to `35.206.117.176`.
+The public primary response includes `Via: 1.1 Caddy`.
+
+`https://sub2api-cf.gapsee.com/v1` still targets
+`837bed69-e168-4b62-aa08-ac4a5d23f8f5.cfargotunnel.com`. The Tunnel's retained
+primary-hostname ingress supports DNS rollback without redeploying it.
+The separate direct origin `https://www.gafeteria.com/v1` is unchanged.
+
+The earlier nginx-to-Tunnel cutover occurred on 2026-10-22 at 08:08:20 UTC.
+The historical nginx rollback file is retained, but the current rollback
+procedure below returns the primary hostname to the tested Tunnel route.
 
 Google Cloud checks HTTPS `/health` every 60 seconds, validates the
 certificate, and requires HTTP 200 with `"status":"ok"`:
@@ -148,12 +159,12 @@ Both policies use a two-minute failure window and the existing operations
 notification channel. These checks monitor availability. The upload and
 streaming probes below provide separate transport validation.
 
-The request path for both hostnames is Cloudflare → `sub2api-cloudflared` →
-`http://sub2api:8080` on the existing `sub2api_backend` Podman network. The Tunnel bypasses nginx
-and Caddy. Application authentication still applies. The remotely managed
-Tunnel ID is `837bed69-e168-4b62-aa08-ac4a5d23f8f5`.
-The desired remote ingress configuration is in
-[`cloudflared-config.json`](cloudflared-config.json).
+The Tunnel alias uses Cloudflare → `sub2api-cloudflared` →
+`http://sub2api:8080` on the existing `sub2api_backend` Podman network,
+bypassing nginx and Caddy. Application authentication applies on both routes.
+The remotely managed Tunnel ID is `837bed69-e168-4b62-aa08-ac4a5d23f8f5`.
+The retained ingress configuration, including the primary hostname for
+rollback, is in [`cloudflared-config.json`](cloudflared-config.json).
 
 The separate `sub2api-cloudflared.service` runs rootless as `sub2api` and
 starts at boot after the application stack. Its runner derives the account's
@@ -186,29 +197,32 @@ sudo journalctl -u sub2api-cloudflared.service -n 30 --no-pager
 curl --fail https://sub2api-cf.gapsee.com/health
 ```
 
-To roll the primary hostname back to nginx, restore DNS record
-`f5feaa51d2303191448092ccb30e1b55` using
-[`sub2api-dns-rollback.json`](sub2api-dns-rollback.json): an A record for
-`119.28.3.34` with Cloudflare proxying disabled. Keep the Tunnel running
-for clients using the alias. Verify health and an authenticated request
-through the restored route after cached DNS entries expire.
+To roll the primary hostname back to the Tunnel, first verify the alias is
+healthy, then PATCH DNS record `f5feaa51d2303191448092ccb30e1b55` with
+[`sub2api-tunnel-dns-rollback.json`](sub2api-tunnel-dns-rollback.json).
+This restores the Tunnel CNAME with Cloudflare proxying enabled. Keep Caddy
+and the Tunnel running. Confirm the DNS record and validate health, model
+discovery and streaming through the primary hostname after the change.
+[`sub2api-dns-rollback.json`](sub2api-dns-rollback.json) is the historical
+nginx A-record rollback, not the rollback for this cutover.
 
-To remove the Tunnel entirely, first move both hostnames to their intended
-replacement routes and remove their Tunnel-specific alerts and uptime checks.
-Then disable `sub2api-cloudflared.service`, delete the Tunnel, and remove
-configuration rule `4fa40853149d470d828d889d61180d77` from the zone's
-`http_config_settings` ruleset.
+Removing the Tunnel requires separate approval. First move or retire the
+alias and its alias-specific uptime check and alert, then disable
+`sub2api-cloudflared.service` and delete the Tunnel. Retain the primary
+hostname's uptime check and its `/v1/` Browser Integrity Check exception.
+Configuration rule `4fa40853149d470d828d889d61180d77` applies to both
+hostnames; do not delete it merely because the Tunnel is retired.
 
 Performance must be compared from the affected clients' networks. A successful
 health check alone does not validate large uploads or long streams. Browser
-Integrity Check is disabled only for `/v1/` paths on the two Tunnel hostnames
-because it rejected a default Python urllib user agent with error `1010`. Application
-API-key authentication remains enabled.
+Integrity Check is disabled only for `/v1/` paths on the primary hostname and
+Tunnel alias because it rejected a default Python urllib user agent with
+error `1010`. Application API-key authentication remains enabled.
 
-After the primary DNS cutover, the original hostname passed authentication
-checks with an existing API key and completed an 8 MiB model stream with
-the expected output. Time to first text was 7.801 seconds and total duration
-was 7.976 seconds. Public DNS returned Cloudflare addresses. These are
+After the primary DNS cutover on 2026-10-22, the original hostname passed
+authentication checks with an existing API key and completed an 8 MiB model
+stream with the expected output. Time to first text was 7.801 seconds and total
+duration was 7.976 seconds. Public DNS returned Cloudflare addresses. These are
 single-request validation timings, not latency guarantees.
 
 Before the cutover on 2026-10-22, equivalent streamed `gpt-6-luna` requests

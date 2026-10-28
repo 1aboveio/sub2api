@@ -33,13 +33,14 @@ on the Podman network. PostgreSQL remains on private Cloud SQL address
 
 ## Caddy Origin Preparation (2026-10-28)
 
-Caddy now also serves `sub2api.gapsee.com` on the existing VM HTTPS port.
-The public DNS record is unchanged: a proxied CNAME to Tunnel
-`837bed69-e168-4b62-aa08-ac4a5d23f8f5`. No traffic cutover was performed.
+Caddy was prepared to serve `sub2api.gapsee.com` on the existing VM HTTPS
+port. At preparation time, public DNS remained a proxied CNAME to Tunnel
+`837bed69-e168-4b62-aa08-ac4a5d23f8f5`. The later primary cutover is recorded
+below.
 
 - A Let's Encrypt certificate covers `sub2api.gapsee.com` and expires on
-  2027-01-26 at 14:10:34 UTC. Certbot uses DNS validation because the current
-  Tunnel bypasses Caddy.
+  2027-01-26 at 14:10:34 UTC. Certbot uses DNS validation because the
+  then-active Tunnel bypassed Caddy.
 - Direct HTTPS validation with `--resolve` returned HTTP 200 and
   `{"status":"ok"}` with certificate verification enabled. An unauthenticated
   `/v1/models` request returned the expected HTTP 401 `API_KEY_REQUIRED`.
@@ -55,8 +56,46 @@ The public DNS record is unchanged: a proxied CNAME to Tunnel
   `/opt/sub2api/Caddyfile.before-sub2api-origin-20261028` for rollback.
 
 See the [origin preparation runbook](README.md#caddy-origin-hostname-preparation)
-for installation, renewal validation and rollback. A future proxied-CNAME
-cutover still requires separate approval and a comparison of that actual route.
+for installation and renewal validation. DNS-based renewal remains configured
+after the primary cutover.
+
+## Primary CNAME Cutover (2026-10-28)
+
+At 16:20:30 UTC, the user-approved cutover changed only the target of
+Cloudflare record `f5feaa51d2303191448092ccb30e1b55` in zone
+`5075f3a8cc751a78fc6894c5b4968871`. It remains a proxied CNAME with automatic
+TTL; its target is now `www.gafeteria.com`, which resolves to `35.206.117.176`.
+
+The primary path is Cloudflare → VM public HTTPS → Caddy → Sub2API.
+Clients still use `https://sub2api.gapsee.com/v1` and their existing API keys.
+The Tunnel service, its primary-hostname ingress, and
+`https://sub2api-cf.gapsee.com/v1` remain unchanged for rollback. No VM,
+application, Caddy, firewall, TLS policy or monitoring configuration changed
+for this DNS cutover.
+
+Before cutover, 42 uncached test requests compared a temporary proxied CNAME
+against the Tunnel. All succeeded. Median first-text times for three small
+model requests were 3.842 s through Caddy and 3.755 s through the Tunnel;
+for three 8 MiB requests they were 23.813 s and 33.415 s respectively.
+These client-network samples include upload and model processing, and do
+not establish a universal latency advantage. The temporary route and its
+certificate were removed before cutover.
+
+Post-cutover validation completed:
+
+- Primary HTTPS `/health` returned HTTP 200 with `Via: 1.1 Caddy`.
+- Authenticated primary model discovery returned HTTP 200 and 29 models.
+- Three health requests per route, one small model stream per route, and one
+  8 MiB model stream per route all succeeded on the primary and Tunnel alias.
+  All four streams returned the expected output and `[DONE]` without cache hits.
+- Existing hostname-based uptime checks continue to monitor the primary and
+  Tunnel alias. Their notification policies were not changed.
+
+Rollback: restore the same primary DNS record with
+[`sub2api-tunnel-dns-rollback.json`](sub2api-tunnel-dns-rollback.json), retaining
+Cloudflare proxying. Verify the Tunnel alias before rollback and the primary
+API afterward. Do not disable Caddy or remove the Tunnel during rollback.
+The [runbook](README.md#public-access-and-tunnel-rollback) describes both paths.
 
 ## Operations
 
