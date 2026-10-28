@@ -32,12 +32,8 @@ http:// {
 	import sub2api_proxy
 }
 
-staging.gafeteria.com, www.gafeteria.com {
+(sub2api_site) {
 	import sub2api_proxy
-
-	tls {
-		protocols tls1.2 tls1.3
-	}
 
 	encode {
 		zstd
@@ -61,5 +57,21 @@ staging.gafeteria.com, www.gafeteria.com {
 	log {
 		output stdout
 		format json
+	}
+}
+
+staging.gafeteria.com, www.gafeteria.com {
+	import sub2api_site
+
+	tls {
+		protocols tls1.2 tls1.3
+	}
+}
+
+sub2api.gapsee.com {
+	import sub2api_site
+
+	tls /data/origin-certificates/sub2api.gapsee.com.pem /data/origin-certificates/sub2api.gapsee.com.pem {
+		protocols tls1.2 tls1.3
 	}
 }

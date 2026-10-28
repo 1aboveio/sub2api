@@ -31,6 +31,33 @@ Only Caddy publishes host ports. The application and Valkey are available only
 on the Podman network. PostgreSQL remains on private Cloud SQL address
 `10.58.0.15:5432` with `sslmode=require`.
 
+## Caddy Origin Preparation (2026-10-28)
+
+Caddy now also serves `sub2api.gapsee.com` on the existing VM HTTPS port.
+The public DNS record is unchanged: a proxied CNAME to Tunnel
+`837bed69-e168-4b62-aa08-ac4a5d23f8f5`. No traffic cutover was performed.
+
+- A Let's Encrypt certificate covers `sub2api.gapsee.com` and expires on
+  2027-01-26 at 14:10:34 UTC. Certbot uses DNS validation because the current
+  Tunnel bypasses Caddy.
+- Direct HTTPS validation with `--resolve` returned HTTP 200 and
+  `{"status":"ok"}` with certificate verification enabled. An unauthenticated
+  `/v1/models` request returned the expected HTTP 401 `API_KEY_REQUIRED`.
+- Both Gafeteria HTTPS hostnames, the public Sub2API hostname, and the Tunnel
+  alias remain healthy. Container start times and restart counts are unchanged.
+- `certbot.timer` renews the certificate. The root-controlled deploy hook is
+  `/usr/local/sbin/sub2api-deploy-caddy-certificate`.
+  `sub2api-caddy-certificate.timer` independently reconciles publication daily,
+  retries failures every 15 minutes, and skips Caddy reloads for unchanged PEMs.
+- The zone-restricted token is stored root-only in
+  `/etc/letsencrypt/cloudflare-sub2api.ini`. No account-wide key was installed.
+- The pre-change Caddyfile is retained at
+  `/opt/sub2api/Caddyfile.before-sub2api-origin-20261028` for rollback.
+
+See the [origin preparation runbook](README.md#caddy-origin-hostname-preparation)
+for installation, renewal validation and rollback. A future proxied-CNAME
+cutover still requires separate approval and a comparison of that actual route.
+
 ## Operations
 
 Connect through IAP:

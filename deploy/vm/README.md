@@ -39,6 +39,88 @@ keyspace and restart behavior have been reviewed under production traffic.
 Cloud Run and Memorystore remain rollback targets until the VM has passed the
 acceptance window. Their deletion is intentionally outside this deployment.
 
+## Caddy origin hostname preparation
+
+`sub2api.gapsee.com` is also configured on Caddy for public-origin validation.
+This does not move traffic: its proxied CNAME still targets the existing
+Cloudflare Tunnel. Changing it to `www.gafeteria.com`, changing proxy status,
+or removing the Tunnel requires a separate approved cutover.
+
+Because the Tunnel bypasses Caddy, Caddy cannot complete its normal HTTP/TLS
+certificate challenges for this hostname. Debian packages `certbot` and
+`python3-certbot-dns-cloudflare` instead issue and renew a public certificate
+using temporary `_acme-challenge.sub2api.gapsee.com` TXT records. The runtime
+credential file `/etc/letsencrypt/cloudflare-sub2api.ini` is root-owned mode
+`0600`; its token has DNS Write and Zone Read only for the `gapsee.com` zone.
+The account-wide Cloudflare key is not installed on the VM.
+
+Install the deploy hook before issuing the certificate:
+
+```bash
+sudo install -o root -g root -m 755 deploy-caddy-certificate.sh \
+  /usr/local/sbin/sub2api-deploy-caddy-certificate
+sudo install -o root -g root -m 644 sub2api-caddy-certificate.service \
+  sub2api-caddy-certificate.timer /etc/systemd/system/
+sudo certbot certonly --non-interactive --agree-tos \
+  --register-unsafely-without-email \
+  --dns-cloudflare \
+  --dns-cloudflare-credentials /etc/letsencrypt/cloudflare-sub2api.ini \
+  --dns-cloudflare-propagation-seconds 30 \
+  --key-type ecdsa --cert-name sub2api.gapsee.com \
+  -d sub2api.gapsee.com \
+  --deploy-hook /usr/local/sbin/sub2api-deploy-caddy-certificate
+sudo systemctl daemon-reload
+sudo systemctl enable --now certbot.timer sub2api-caddy-certificate.timer
+```
+
+The hook publishes a combined certificate/private-key PEM, mode `0600`, into
+`sub2api_caddy_data` at `/data/origin-certificates/sub2api.gapsee.com.pem`.
+It runs all volume writes as `sub2api`, checks the hostname, expiry and key
+match, atomically replaces the PEM, validates Caddy, and force-reloads its
+configuration to pick up renewed certificates. A failed validation/reload
+restores the previous PEM. Other certificate lineages are ignored. The
+certificate is mounted through Caddy's existing data volume; no application
+restart or additional published port is needed. The root-executed hook lives
+under root-controlled `/usr/local/sbin`, not the application-writable
+`/opt/sub2api` directory.
+
+`sub2api-caddy-certificate.timer` reconciles the current lineage daily and
+its service retries failures every 15 minutes. An unchanged PEM is not
+republished and does not trigger a Caddy reload. This is separate from
+`certbot.timer`: certificate issuance can succeed even if its deploy hook
+fails, in which case Certbot will not immediately renew again. To retry
+publication without requesting another certificate:
+
+```bash
+sudo systemctl start sub2api-caddy-certificate.service
+```
+
+The shared `sub2api_site` snippet keeps request limits, encoding, proxying and
+logging identical across the origin hostnames. The existing Gafeteria
+hostnames retain Caddy-managed certificates. Provision the Sub2API certificate
+before installing this Caddyfile. Preserve a copy of the previous Caddyfile,
+update the existing bind-mounted file **in place**, validate, then reload:
+
+```bash
+sudo -u sub2api XDG_RUNTIME_DIR=/run/user/$(id -u sub2api) \
+  podman exec sub2api-caddy caddy validate \
+  --config /etc/caddy/Caddyfile --adapter caddyfile
+sudo -u sub2api XDG_RUNTIME_DIR=/run/user/$(id -u sub2api) \
+  podman exec sub2api-caddy caddy reload \
+  --config /etc/caddy/Caddyfile --adapter caddyfile
+curl --noproxy '*' --resolve sub2api.gapsee.com:443:35.206.117.176 \
+  --fail https://sub2api.gapsee.com/health
+sudo certbot renew --cert-name sub2api.gapsee.com --dry-run
+sudo systemctl start sub2api-caddy-certificate.service
+```
+
+Verify the public Tunnel hostname, its alias, and both Gafeteria hostnames
+remain healthy. To roll back preparation, restore the saved Caddyfile in
+place, validate and reload it; leave the public DNS record and Tunnel alone.
+Disable this lineage's renewal and `sub2api-caddy-certificate.timer` only after
+the Caddy hostname is removed. Never revoke a token or disable a shared
+certificate timer without checking its other consumers.
+
 ## Cloudflare Tunnel access
 
 Clients use `https://sub2api.gapsee.com/v1` with their existing API keys.
