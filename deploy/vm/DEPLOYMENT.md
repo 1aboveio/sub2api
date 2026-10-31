@@ -1,5 +1,16 @@
 # Production VM deployment state
 
+> **Superseded on 2026-10-31:** production now runs on DigitalOcean Droplet
+> `sub2api-prod-sfo3` (`24.199.126.176`), including local PostgreSQL 17 and Valkey.
+> The current app is official Sub2API **0.2.19**, upgraded on 2026-10-31; see the
+> [upgrade record](https://github.com/1aboveio/infra/blob/main/docs/migrations/sub2api-upgrade-0.2.19-2026-10-31.md).
+> All four public hostnames target DigitalOcean; the old GCP VM is stopped.
+> The GCP material below is
+> historical recovery information. After the new deployment accepts writes,
+> rollback requires migrating the current database back; restoring old DNS alone
+> is unsafe. See the infrastructure repository's
+> [migration record](https://github.com/1aboveio/infra/blob/main/docs/migrations/sub2api-digitalocean-2026-10-31.md).
+
 Deployment date: 2026-09-14
 
 ## Resources
