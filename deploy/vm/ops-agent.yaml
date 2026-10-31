@@ -1,0 +1,17 @@
+logging:
+  receivers:
+    podman_containers:
+      type: files
+      include_paths:
+        - /home/sub2api/.local/share/containers/storage/vfs-containers/*/userdata/ctr.log
+  processors:
+    parse_podman_json:
+      type: parse_json
+      field: message
+      time_key: time
+      time_format: "%Y-%m-%dT%H:%M:%S.%L%z"
+  service:
+    pipelines:
+      podman:
+        receivers: [podman_containers]
+        processors: [parse_podman_json]

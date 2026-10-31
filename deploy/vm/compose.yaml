@@ -1,0 +1,115 @@
+services:
+  valkey:
+    image: docker.io/valkey/valkey:8-alpine
+    container_name: sub2api-valkey
+    restart: unless-stopped
+    logging:
+      driver: k8s-file
+    command:
+      - valkey-server
+      - --save
+      - ""
+      - --appendonly
+      - "no"
+      - --maxmemory-policy
+      - noeviction
+    security_opt:
+      - no-new-privileges:true
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+      nproc:
+        soft: 15000
+        hard: 15000
+    volumes:
+      - valkey_data:/data
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD-SHELL", "valkey-cli ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  sub2api:
+    image: ${SUB2API_IMAGE:?SUB2API_IMAGE is required}
+    container_name: sub2api
+    restart: unless-stopped
+    logging:
+      driver: k8s-file
+    env_file:
+      - runtime.env
+    environment:
+      AUTO_SETUP: "true"
+      SERVER_HOST: 0.0.0.0
+      SERVER_PORT: "8080"
+      REDIS_HOST: valkey
+      REDIS_PORT: "6379"
+      REDIS_ENABLE_TLS: "false"
+      SERVER_TRUSTED_PROXIES: 10.89.20.0/24
+      CORS_ALLOWED_ORIGINS: https://www.gafeteria.com,https://staging.gafeteria.com
+    security_opt:
+      - no-new-privileges:true
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+      nproc:
+        soft: 15000
+        hard: 15000
+    volumes:
+      - sub2api_data:/app/data
+    networks:
+      - backend
+    depends_on:
+      valkey:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -T 5 -O /dev/null http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+
+  caddy:
+    image: docker.io/library/caddy:2-alpine
+    container_name: sub2api-caddy
+    restart: unless-stopped
+    logging:
+      driver: k8s-file
+    security_opt:
+      - no-new-privileges:true
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+      nproc:
+        soft: 15000
+        hard: 15000
+    ports:
+      - 80:80
+      - 443:443
+      - 443:443/udp
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro,Z
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - backend
+    depends_on:
+      sub2api:
+        condition: service_healthy
+
+volumes:
+  caddy_config:
+  caddy_data:
+  sub2api_data:
+  valkey_data:
+
+networks:
+  backend:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.89.20.0/24
