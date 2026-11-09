@@ -42,11 +42,18 @@ func UpstreamRequestIDFromHeaders(account *Account, h http.Header) string {
 
 // usageUpstreamRequestIDPtr 生成落库到 usage_logs.upstream_request_id 的值。
 // WS 轮次没有 HTTP 响应头，保持 nil；超长时截断到列宽而不是让整条用量行失败。
-func usageUpstreamRequestIDPtr(account *Account, h http.Header, wsMode bool) *string {
+//
+// fallback 是上游 response id（resp_* 等）：纯 SSE 的 ChatGPT/Codex 上游并不回
+// 账户配置的那个响应头，只凭响应头会让「用量明细 → 上游ID」长期为空；配置了头名
+// 但上游没回时回退到 response id，便于和客户端日志（pi/Codex 的 responseId）对齐。
+func usageUpstreamRequestIDPtr(account *Account, h http.Header, wsMode bool, fallback string) *string {
 	if wsMode {
 		return nil
 	}
 	id := UpstreamRequestIDFromHeaders(account, h)
+	if id == "" {
+		id = strings.TrimSpace(fallback)
+	}
 	if id == "" {
 		return nil
 	}
