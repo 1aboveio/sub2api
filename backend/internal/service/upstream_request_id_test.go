@@ -48,12 +48,12 @@ func TestUsageUpstreamRequestIDPtr(t *testing.T) {
 	account := &Account{Extra: map[string]any{AccountExtraUpstreamRequestIDHeader: "X-Request-ID"}}
 	h := http.Header{}
 	h.Set("X-Request-ID", strings.Repeat("a", 200))
-	require.Nil(t, usageUpstreamRequestIDPtr(account, h, true))
-	require.Nil(t, usageUpstreamRequestIDPtr(account, http.Header{}, false))
-	require.Nil(t, usageUpstreamRequestIDPtr(nil, h, false))
-	require.Nil(t, usageUpstreamRequestIDPtr(&Account{}, h, false))
+	require.Nil(t, usageUpstreamRequestIDPtr(account, h, true, ""))
+	require.Nil(t, usageUpstreamRequestIDPtr(account, http.Header{}, false, ""))
+	require.Nil(t, usageUpstreamRequestIDPtr(nil, h, false, ""))
+	require.Nil(t, usageUpstreamRequestIDPtr(&Account{}, h, false, ""))
 
-	got := usageUpstreamRequestIDPtr(account, h, false)
+	got := usageUpstreamRequestIDPtr(account, h, false, "")
 	require.NotNil(t, got)
 	require.Len(t, *got, maxUsageUpstreamRequestIDLen)
 }
@@ -75,4 +75,28 @@ func TestValidateUpstreamRequestIDHeaderExtra(t *testing.T) {
 	require.Error(t, ValidateUpstreamRequestIDHeaderExtra(map[string]any{AccountExtraUpstreamRequestIDHeader: "X Request Id"}))
 	require.Error(t, ValidateUpstreamRequestIDHeaderExtra(map[string]any{AccountExtraUpstreamRequestIDHeader: "X-Request-Id:"}))
 	require.Error(t, ValidateUpstreamRequestIDHeaderExtra(map[string]any{AccountExtraUpstreamRequestIDHeader: strings.Repeat("x", 65)}))
+}
+
+func TestUsageUpstreamRequestIDPtrFallsBackToResponseID(t *testing.T) {
+	account := &Account{Extra: map[string]any{AccountExtraUpstreamRequestIDHeader: "x-request-id"}}
+
+	// Configured header absent (pure-SSE ChatGPT/Codex upstream sends no x-request-id).
+	got := usageUpstreamRequestIDPtr(account, http.Header{}, false, "resp_abc123")
+	require.NotNil(t, got)
+	require.Equal(t, "resp_abc123", *got)
+
+	// Header wins when present.
+	h := http.Header{}
+	h.Set("x-request-id", "req_header")
+	got = usageUpstreamRequestIDPtr(account, h, false, "resp_abc123")
+	require.NotNil(t, got)
+	require.Equal(t, "req_header", *got)
+
+	// No header name configured still records the response id.
+	got = usageUpstreamRequestIDPtr(&Account{}, http.Header{}, false, " resp_trim ")
+	require.NotNil(t, got)
+	require.Equal(t, "resp_trim", *got)
+
+	// Empty fallback keeps the column NULL.
+	require.Nil(t, usageUpstreamRequestIDPtr(account, http.Header{}, false, "   "))
 }
