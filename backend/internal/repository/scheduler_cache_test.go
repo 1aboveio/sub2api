@@ -108,3 +108,21 @@ func TestSchedulerMetadataAccountDropsInvalidUpstreamBillingProbe(t *testing.T) 
 		require.NotContains(t, metadata.Extra, service.UpstreamBillingProbeExtraKey)
 	}
 }
+
+func TestSchedulerMetadataAccountKeepsUpstreamRequestIDHeader(t *testing.T) {
+	account := service.Account{
+		ID:       10,
+		Platform: service.PlatformOpenAI,
+		Type:     service.AccountTypeOAuth,
+		Extra: map[string]any{
+			service.AccountExtraUpstreamRequestIDHeader: "x-request-id",
+			"unrelated_operator_note":                   "dropped-on-projection",
+		},
+	}
+
+	metadata := buildSchedulerMetadataAccount(account)
+
+	require.Equal(t, "x-request-id", metadata.GetExtraString(service.AccountExtraUpstreamRequestIDHeader))
+	require.Equal(t, "x-request-id", service.UpstreamRequestIDHeaderName(&metadata))
+	require.NotContains(t, metadata.Extra, "unrelated_operator_note")
+}

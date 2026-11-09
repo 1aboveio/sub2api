@@ -1030,6 +1030,9 @@ func filterSchedulerExtra(extra map[string]any) map[string]any {
 		"auto_pause_5h_disabled",
 		"auto_pause_7d_disabled",
 		"model_rate_limits",
+		// 上游请求标识头名必须进投影：转发与记费用的是本投影账号对象，
+		// 裁掉它会让 usage_logs.upstream_request_id 恒为空（账户配置看起来"没生效"）。
+		service.AccountExtraUpstreamRequestIDHeader,
 		service.UpstreamBillingProbeExtraKey,
 		service.GrokMediaEligibleExtraKey,
 		"grok_billing_snapshot",
