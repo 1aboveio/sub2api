@@ -131,6 +131,9 @@ docs/*
 !docs/PAYMENT.md
 !docs/PAYMENT_CN.md
 !docs/ADMIN_PAYMENT_INTEGRATION_API.md
+# Architecture decision records are tracked, unlike the rest of docs/
+!docs/adr/
+!docs/adr/*.md
 .serena/
 .codex/
 frontend/coverage/
