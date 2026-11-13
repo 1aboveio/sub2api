@@ -1,6 +1,6 @@
 {
   "name": "@1aboveio/pi-request-compression",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Opt-in pi extension for compressed JSON uploads to the Gafeteria and Gapsee gateways.",
   "type": "module",
   "license": "LGPL-3.0-only",

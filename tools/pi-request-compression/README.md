@@ -12,16 +12,16 @@ gateway deployment are required.
 ## Install
 
 ```sh
-pi install npm:@1aboveio/pi-request-compression@0.1.0
+pi install npm:@1aboveio/pi-request-compression@0.1.1
 ```
 
 Start a new pi session after installation. To try it without installing:
 
 ```sh
-pi -e npm:@1aboveio/pi-request-compression@0.1.0
+pi -e npm:@1aboveio/pi-request-compression@0.1.1
 ```
 
-For this project only, use `pi install -l npm:@1aboveio/pi-request-compression@0.1.0`.
+For this project only, use `pi install -l npm:@1aboveio/pi-request-compression@0.1.1`.
 
 ## Behavior
 
@@ -43,7 +43,7 @@ fallback is attempted after a failed request, to avoid duplicate execution.
 ## Verify
 
 ```sh
-PI_COMPRESSION_DEBUG=1 pi -e npm:@1aboveio/pi-request-compression@0.1.0
+PI_COMPRESSION_DEBUG=1 pi -e npm:@1aboveio/pi-request-compression@0.1.1
 ```
 
 Debug output on stderr reports only host, encoding, original bytes, and
@@ -59,7 +59,7 @@ conversations, and the smoke does not establish a latency improvement.
 ## Remove
 
 ```sh
-pi remove npm:@1aboveio/pi-request-compression@0.1.0
+pi remove npm:@1aboveio/pi-request-compression@0.1.1
 ```
 
 Restart pi afterwards. Use `-l` when removing a project-local installation.
