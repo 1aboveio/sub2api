@@ -1,0 +1,57 @@
+name: Publish Pi Request Compression
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: npm-pi-request-compression
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.repository == '1aboveio/sub2api' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: npm-publish
+    permissions:
+      contents: read
+      id-token: write
+    defaults:
+      run:
+        working-directory: tools/pi-request-compression
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+      - name: Pin npm with OIDC support
+        run: npm install --global npm@11.19.0 --registry=https://registry.npmjs.org
+      - name: Test transport
+        # There are no install dependencies.
+        run: npm test
+      - name: Pack tested source
+        # Keep lifecycle test output out of the JSON artifact manifest.
+        run: npm pack --ignore-scripts --json > "$RUNNER_TEMP/compression-pack.json"
+      - name: Verify artifact contents
+        run: |
+          node --input-type=module <<'JS'
+          import fs from 'node:fs';
+          import assert from 'node:assert/strict';
+          const [pack] = JSON.parse(fs.readFileSync(`${process.env.RUNNER_TEMP}/compression-pack.json`, 'utf8'));
+          assert.equal(pack.name, '@1aboveio/pi-request-compression');
+          assert.deepEqual(pack.files.map(f => f.path).sort(),
+            ['LICENSE', 'README.md', 'index.ts', 'package.json', 'transport.mjs', 'transport.test.mjs']);
+          fs.appendFileSync(process.env.GITHUB_ENV,
+            `PACKAGE_FILE=${pack.filename}\nPACKAGE_SPEC=${pack.name}@${pack.version}\nPACKAGE_SHA=${pack.shasum}\n`);
+          JS
+      - name: Publish with trusted identity
+        run: npm publish "$PACKAGE_FILE" --access public --provenance --registry=https://registry.npmjs.org
+      - name: Verify registry artifact
+        run: |
+          actual=$(npm view "$PACKAGE_SPEC" dist.shasum --registry=https://registry.npmjs.org)
+          test "$actual" = "$PACKAGE_SHA"
