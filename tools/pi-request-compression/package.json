@@ -1,0 +1,25 @@
+{
+  "name": "@1aboveio/pi-request-compression",
+  "version": "0.1.0",
+  "description": "Opt-in pi extension for compressed JSON uploads to the Gafeteria and Gapsee gateways.",
+  "type": "module",
+  "license": "LGPL-3.0-only",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/1aboveio/sub2api.git",
+    "directory": "tools/pi-request-compression"
+  },
+  "keywords": ["pi-package", "pi-extension", "zstd", "gzip"],
+  "engines": { "node": ">=22" },
+  "peerDependencies": { "@earendil-works/pi-coding-agent": "*" },
+  "files": ["index.ts", "transport.mjs", "transport.test.mjs", "README.md", "LICENSE"],
+  "pi": { "extensions": ["./index.ts"] },
+  "scripts": {
+    "test": "node --test transport.test.mjs",
+    "prepack": "npm test"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org"
+  }
+}
