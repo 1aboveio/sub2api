@@ -1,0 +1,25 @@
+{
+  "config": {
+    "ingress": [
+      {
+        "hostname": "sub2api.gapsee.com",
+        "service": "http://sub2api:8080",
+        "originRequest": {
+          "connectTimeout": 30,
+          "keepAliveTimeout": 90
+        }
+      },
+      {
+        "hostname": "sub2api-cf.gapsee.com",
+        "service": "http://sub2api:8080",
+        "originRequest": {
+          "connectTimeout": 30,
+          "keepAliveTimeout": 90
+        }
+      },
+      {
+        "service": "http_status:404"
+      }
+    ]
+  }
+}

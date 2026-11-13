@@ -1,0 +1,12 @@
+[Unit]
+Description=Publish the current Sub2API origin certificate to Caddy
+After=sub2api-compose.service
+ConditionPathExists=/etc/letsencrypt/live/sub2api.gapsee.com/fullchain.pem
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+Environment=RENEWED_LINEAGE=/etc/letsencrypt/live/sub2api.gapsee.com
+ExecStart=/usr/local/sbin/sub2api-deploy-caddy-certificate
+Restart=on-failure
+RestartSec=15min

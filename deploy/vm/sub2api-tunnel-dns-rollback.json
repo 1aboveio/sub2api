@@ -1,0 +1,7 @@
+{
+  "type": "CNAME",
+  "name": "sub2api.gapsee.com",
+  "content": "837bed69-e168-4b62-aa08-ac4a5d23f8f5.cfargotunnel.com",
+  "ttl": 1,
+  "proxied": true
+}

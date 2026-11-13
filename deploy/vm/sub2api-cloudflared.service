@@ -1,0 +1,23 @@
+[Unit]
+Description=Sub2API Cloudflare Tunnel
+Wants=network-online.target sub2api-compose.service
+After=network-online.target sub2api-compose.service
+PartOf=sub2api-compose.service
+
+[Service]
+Type=simple
+User=sub2api
+Group=sub2api
+WorkingDirectory=/opt/sub2api
+EnvironmentFile=/opt/sub2api/cloudflared-image.env
+ExecStart=/opt/sub2api/run-cloudflared.sh
+ExecStop=/opt/sub2api/run-cloudflared.sh stop
+Restart=always
+RestartSec=5
+TimeoutStopSec=45
+LimitNOFILE=65536
+LimitNPROC=65536
+TasksMax=infinity
+
+[Install]
+WantedBy=multi-user.target
